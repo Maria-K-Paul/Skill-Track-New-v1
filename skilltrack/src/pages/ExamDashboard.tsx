@@ -196,7 +196,7 @@ export default function ExamDashboard() {
   useEffect(() => {
     if (stage !== 'test') return
     // One "leave" can fire blur, visibilitychange and fullscreenchange together, so count it once
-    let debounceTimer: NodeJS.Timeout | null = null
+    let debounceTimer: number | null = null
     const leave = (reason: string) => {
       if (away.current || submitting.current) return
       away.current = true

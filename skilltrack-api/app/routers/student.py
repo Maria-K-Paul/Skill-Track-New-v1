@@ -561,7 +561,6 @@ def cancel_booking(booking_id: int, user: User = Depends(student_only), db: Sess
     slot = db.get(Slot, booking.slot_id)
     level = db.get(Level, slot.level_id)
     db.add(ActivityLog(user_id=user.id, action=f"{user.name} cancelled their slot booking for {level.name}"))
->>>>>>> 5aa04c014e2d5ab57ff8b3316039ecad7816e36a
     db.commit()
 
 

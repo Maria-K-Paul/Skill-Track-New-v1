@@ -1051,7 +1051,7 @@ export default function StudentDashboard() {
                     </Link>
                   )}
                 </>
-              ) : (
+              ) : enrollment ? (
                 <>
                   <div className="text-4xl font-bold text-slate-900">
                     {enrollment.points} <span className="text-base font-normal text-slate-500">/ {data.points_to_unlock} pts</span>
@@ -1065,7 +1065,7 @@ export default function StudentDashboard() {
                       : `Earn ${data.points_to_unlock - enrollment.points} more points to unlock another domain.`}
                   </p>
                 </>
-              )}
+              ) : null}
               <p className="mt-4 inline-flex items-center gap-2 rounded-full bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-800">
                 🏅 Badges earned: {badgeCount}
               </p>
