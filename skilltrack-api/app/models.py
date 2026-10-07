@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, false
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -35,6 +35,8 @@ class Domain(Base):
     owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     # The Semester 1-2 common assessments live in a special domain that students never pick themselves
     is_common: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    description: Mapped[str | None] = mapped_column(String(500))
+    difficulty: Mapped[str | None] = mapped_column(String(20))  # beginner | intermediate | advanced
     levels: Mapped[list["Level"]] = relationship(back_populates="domain", order_by="Level.number")
 
 
@@ -69,20 +71,32 @@ class Question(Base):
 
 class Enrollment(Base):
     __tablename__ = "enrollments"
-    __table_args__ = (UniqueConstraint("user_id", "domain_id"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "domain_id"),
+        # Enforced at DB level: partial unique index (SQLite 3.8+, PostgreSQL)
+        # Created via migration; declared here for documentation only — SQLAlchemy
+        # does not emit partial indexes via create_all.
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     domain_id: Mapped[int] = mapped_column(ForeignKey("domains.id"))
-    status: Mapped[str] = mapped_column(String(20), default="active")  # active | removed
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active | completed | removed
     current_level: Mapped[int] = mapped_column(Integer, default=1)
     points: Mapped[int] = mapped_column(Integer, default=0)
+    enrolled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Denormalized flag so the partial unique index (one active domain per student) can
+    # exclude the common-assessments track without joining to the domains table.
+    is_common_enrollment: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
 
 class Slot(Base):
     __tablename__ = "slots"
+    __table_args__ = (UniqueConstraint("level_id", "starts_at", "venue"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    domain_id: Mapped[int] = mapped_column(ForeignKey("domains.id"))
     level_id: Mapped[int] = mapped_column(ForeignKey("levels.id"))
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     venue: Mapped[str] = mapped_column(String(120))
@@ -96,6 +110,10 @@ class SlotBooking(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     slot_id: Mapped[int] = mapped_column(ForeignKey("slots.id"))
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    status: Mapped[str] = mapped_column(String(20), default="booked")  # booked | cancelled | missed
+    booked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow)
+    change_cancel_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    acknowledgement_acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Attempt(Base):
@@ -114,13 +132,33 @@ class Attempt(Base):
 
 class Certificate(Base):
     __tablename__ = "certificates"
+    __table_args__ = (UniqueConstraint("user_id", "domain_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    domain_id: Mapped[int | None] = mapped_column(ForeignKey("domains.id"))
     level_id: Mapped[int] = mapped_column(ForeignKey("levels.id"))
     code: Mapped[str] = mapped_column(String(40), unique=True)
     first_attempt: Mapped[bool] = mapped_column(Boolean, default=False)
     issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Snapshot fields (populated at issue time; survive renames)
+    student_name: Mapped[str | None] = mapped_column(String(120))
+    domain_name: Mapped[str | None] = mapped_column(String(100))
+    # Cryptographically secure token (128 bits / 32 hex chars) used in QR verify URLs
+    verification_token: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
+    # valid | revoked | legacy (legacy = old per-level cert kept for historical display)
+    status: Mapped[str] = mapped_column(String(20), default="valid")
+
+
+class Badge(Base):
+    __tablename__ = "badges"
+    __table_args__ = (UniqueConstraint("user_id", "level_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    domain_id: Mapped[int] = mapped_column(ForeignKey("domains.id"))
+    level_id: Mapped[int] = mapped_column(ForeignKey("levels.id"))
+    awarded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class ActivityLog(Base):
@@ -137,7 +175,9 @@ class ExamKey(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     code: Mapped[str] = mapped_column(String(20), unique=True, index=True)
-    level_id: Mapped[int] = mapped_column(ForeignKey("levels.id"))
+    domain_id: Mapped[int] = mapped_column(ForeignKey("domains.id"))
+    # level_id is optional - used only for keys generated without a slot (by specific level)
+    level_id: Mapped[int | None] = mapped_column(ForeignKey("levels.id"))
     issued_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     # When set, only students who booked this slot can use the key
     slot_id: Mapped[int | None] = mapped_column(ForeignKey("slots.id"))

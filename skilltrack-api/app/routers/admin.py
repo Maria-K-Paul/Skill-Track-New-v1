@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from ..database import get_db
 from ..deps import require_roles
@@ -13,7 +14,7 @@ from ..rules import (
     COMMON_DOMAIN_NAME, DEFAULT_LEVELS, DEFAULT_SETTINGS, DOMAIN_SELECTION_SEMESTER,
     enrollment_status, get_settings, semester_of,
 )
-from ..schemas import AssignCommonIn, DomainIn, DomainPatch, PromoteIn, SettingsIn, StaffIn, UserOut, UserPatch
+from ..schemas import AssignCommonIn, DomainIn, DomainMetaPatch, DomainPatch, PromoteIn, SettingsIn, StaffIn, UserOut, UserPatch
 from ..security import hash_password
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -192,7 +193,11 @@ def assign_common(body: AssignCommonIn, db: Session = Depends(get_db), admin: Us
         user_id=admin.id,
         action=f"{admin.name} assigned Semester {body.semester} common assessment — enrolled {enrolled_count} student(s), slot at {body.venue}",
     ))
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "This slot is already enrolled/created.")
     return {
         "enrolled": enrolled_count,
         "already_enrolled": len(students) - enrolled_count,
@@ -291,6 +296,22 @@ def assign_owner(domain_id: int, body: DomainPatch, db: Session = Depends(get_db
     db.add(ActivityLog(user_id=admin.id, action=f"{admin.name} updated the owner of {domain.name}"))
     db.commit()
     return {"id": domain.id, "owner_id": domain.owner_id}
+
+
+@router.patch("/domains/{domain_id}/meta")
+def update_domain_meta(
+    domain_id: int, body: DomainMetaPatch,
+    db: Session = Depends(get_db), admin: User = Depends(admin_only),
+):
+    """Set description and difficulty for a domain (used by admin to enrich the domain catalogue)."""
+    domain = db.get(Domain, domain_id)
+    if domain is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Domain not found")
+    changes = body.model_dump(exclude_unset=True)
+    for field, value in changes.items():
+        setattr(domain, field, value)
+    db.commit()
+    return {"id": domain.id, "description": domain.description, "difficulty": domain.difficulty}
 
 
 # ---------- Settings ----------

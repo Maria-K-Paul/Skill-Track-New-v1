@@ -3,6 +3,7 @@ import Layout from './components/Layout'
 import { HOME, useAuth } from './context/AuthContext'
 import type { Role } from './context/AuthContext'
 import AdminDashboard from './pages/AdminDashboard'
+import DomainsPage from './pages/DomainsPage'
 import ExamDashboard from './pages/ExamDashboard'
 import InvigilatorDashboard from './pages/InvigilatorDashboard'
 import Login from './pages/Login'
@@ -10,6 +11,7 @@ import OwnerDashboard from './pages/OwnerDashboard'
 import Register from './pages/Register'
 import Verify from './pages/Verify'
 import StudentDashboard from './pages/StudentDashboard'
+import CredentialsPage from './pages/CredentialsPage'
 
 function RequireRole({ roles }: { roles: Role[] }) {
   const { user, loading } = useAuth()
@@ -34,6 +36,12 @@ export default function App() {
       <Route element={<Layout />}>
         <Route element={<RequireRole roles={['student']} />}>
           <Route path="/student" element={<StudentDashboard />} />
+        </Route>
+        <Route element={<RequireRole roles={['student']} />}>
+          <Route path="/student/domains" element={<DomainsPage />} />
+        </Route>
+        <Route element={<RequireRole roles={['student']} />}>
+          <Route path="/student/credentials" element={<CredentialsPage />} />
         </Route>
         <Route element={<RequireRole roles={['student']} />}>
           <Route path="/exam" element={<ExamDashboard />} />

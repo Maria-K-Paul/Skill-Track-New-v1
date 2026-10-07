@@ -8,3 +8,5 @@ email-validator
 httpx
 google-genai
 reportlab
+qrcode[pil]
+apscheduler

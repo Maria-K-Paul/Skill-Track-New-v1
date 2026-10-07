@@ -193,7 +193,7 @@ export function StudentIllustration() {
 /** Shared split-screen shell for the Login and Register pages. `children` is the form card. */
 export default function AuthLayout({ children }: { children: ReactNode }) {
   return (
-    <div className="relative flex min-h-screen overflow-hidden bg-gray-50">
+    <div className="relative flex min-h-screen overflow-hidden bg-gray-50 dark:bg-slate-950">
       {/* Brand panel */}
       <aside
         className="relative hidden flex-col justify-between overflow-hidden bg-slate-950 p-12 text-white lg:flex lg:w-[52%]"

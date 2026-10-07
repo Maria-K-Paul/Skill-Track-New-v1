@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from ..database import get_db
 from ..deps import require_roles
@@ -15,18 +16,18 @@ router = APIRouter(prefix="/manage/slots", tags=["slots"])
 managers = require_roles("admin", "owner")
 
 
-def _manageable_level(db: Session, user: User, level_id: int) -> Level:
-    level = db.get(Level, level_id)
-    if level is None or (user.role == "owner" and level.domain.owner_id != user.id):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Level not found")
-    return level
+def _manageable_domain(db: Session, user: User, domain_id: int) -> Domain:
+    domain = db.get(Domain, domain_id)
+    if domain is None or (user.role == "owner" and domain.owner_id != user.id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Domain not found")
+    return domain
 
 
 def _manageable_slot(db: Session, user: User, slot_id: int) -> Slot:
     slot = db.get(Slot, slot_id)
     if slot is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Slot not found")
-    _manageable_level(db, user, slot.level_id)
+    _manageable_domain(db, user, slot.domain_id)
     return slot
 
 
@@ -44,38 +45,52 @@ def _booked(db: Session, slot_id: int) -> int:
 
 
 def _out(db: Session, slot: Slot) -> dict:
+    domain = db.get(Domain, slot.domain_id)
     return {
-        "id": slot.id, "level_id": slot.level_id, "starts_at": slot.starts_at,
-        "venue": slot.venue, "capacity": slot.capacity, "booked": _booked(db, slot.id),
+        "id": slot.id, "domain_id": slot.domain_id, "domain_name": domain.name if domain else "",
+        "starts_at": slot.starts_at, "venue": slot.venue, "capacity": slot.capacity,
+        "booked": _booked(db, slot.id),
     }
 
 
 @router.get("/catalog")
 def catalog(db: Session = Depends(get_db), user: User = Depends(managers)):
-    query = select(Domain).order_by(Domain.id)
+    query = select(Domain).where(Domain.is_common.is_(False)).order_by(Domain.id)
     if user.role == "owner":
         query = query.where(Domain.owner_id == user.id)
     return [
-        {"id": d.id, "name": d.name, "levels": [{"id": lv.id, "number": lv.number, "name": lv.name} for lv in d.levels]}
+        {"id": d.id, "name": d.name}
         for d in db.scalars(query)
     ]
 
 
 @router.get("")
-def list_slots(level_id: int, db: Session = Depends(get_db), user: User = Depends(managers)):
-    level = _manageable_level(db, user, level_id)
-    slots = db.scalars(select(Slot).where(Slot.level_id == level.id).order_by(Slot.starts_at)).all()
+def list_slots(domain_id: int, db: Session = Depends(get_db), user: User = Depends(managers)):
+    domain = _manageable_domain(db, user, domain_id)
+    slots = db.scalars(select(Slot).where(Slot.domain_id == domain.id).order_by(Slot.starts_at)).all()
     return [_out(db, s) for s in slots]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 def create_slot(body: SlotIn, db: Session = Depends(get_db), user: User = Depends(managers)):
-    level = _manageable_level(db, user, body.level_id)
+    domain = _manageable_domain(db, user, body.domain_id)
     _require_future(body.starts_at)
-    slot = Slot(level_id=level.id, starts_at=body.starts_at, venue=body.venue.strip(), capacity=body.capacity)
+    # Get level to associate with slot
+    level = db.get(Level, body.level_id) if hasattr(body, 'level_id') and body.level_id else None
+    if level is None:
+        # Default to first level of domain if not specified
+        level = db.scalar(select(Level).where(Level.domain_id == domain.id).order_by(Level.number).limit(1))
+    if level is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No levels found for this domain")
+
+    slot = Slot(domain_id=domain.id, level_id=level.id, starts_at=body.starts_at, venue=body.venue.strip(), capacity=body.capacity)
     db.add(slot)
     db.add(ActivityLog(user_id=user.id, action=f"{user.name} scheduled a slot for {level.name} at {slot.venue}"))
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "A slot for this level at this time and venue already exists.")
     return _out(db, slot)
 
 
@@ -92,7 +107,11 @@ def update_slot(slot_id: int, body: SlotPatch, db: Session = Depends(get_db), us
     for field, value in changes.items():
         if value is not None:
             setattr(slot, field, value.strip() if isinstance(value, str) else value)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "This slot is already enrolled/created.")
     return _out(db, slot)
 
 

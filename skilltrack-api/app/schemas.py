@@ -116,6 +116,11 @@ class DomainPatch(BaseModel):
     owner_id: int | None = None
 
 
+class DomainMetaPatch(BaseModel):
+    description: str | None = Field(default=None, max_length=500)
+    difficulty: str | None = Field(default=None, pattern="^(beginner|intermediate|advanced)$")
+
+
 class SettingsIn(BaseModel):
     max_attempts: int = Field(ge=1, le=10)
     points_to_unlock: int = Field(ge=1, le=1000)
@@ -125,7 +130,8 @@ class SettingsIn(BaseModel):
 
 
 class SlotIn(BaseModel):
-    level_id: int
+    domain_id: int
+    level_id: int | None = None  # Optional: defaults to first level of domain if not provided
     starts_at: AwareDatetime
     venue: str = Field(min_length=2, max_length=120)
     capacity: int = Field(ge=1, le=500)
@@ -146,3 +152,17 @@ class AssignCommonIn(BaseModel):
 
 class PromoteIn(BaseModel):
     student_ids: list[int] = Field(min_length=1, max_length=2000)
+
+
+class BookSlotIn(BaseModel):
+    acknowledgement: bool = False
+
+    @model_validator(mode="after")
+    def must_acknowledge(self):
+        if not self.acknowledgement:
+            raise ValueError("You must acknowledge the slot booking rules before confirming.")
+        return self
+
+
+class ChangeSlotIn(BaseModel):
+    new_slot_id: int

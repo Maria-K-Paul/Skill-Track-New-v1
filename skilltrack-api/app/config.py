@@ -38,3 +38,7 @@ GEMINI_FALLBACK_MODELS = [
     m.strip() for m in os.environ.get("GEMINI_FALLBACK_MODELS", "gemini-1.5-pro,gemini-1.5-flash-8b").split(",") if m.strip()
 ]
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+# Public base URL used in QR codes (can differ from FRONTEND_URL behind a reverse proxy)
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", FRONTEND_URL).rstrip("/")
+# How many minutes after booking a student may change or cancel their slot
+BOOKING_WINDOW_MINUTES = int(os.environ.get("BOOKING_WINDOW_MINUTES", "30"))

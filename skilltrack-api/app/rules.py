@@ -1,9 +1,11 @@
 """Platform rules shared by the student and exam routers."""
+from datetime import datetime, timezone
+
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .models import ActivityLog, Attempt, Certificate, Domain, Enrollment, Level, Setting, User
+from .models import ActivityLog, Attempt, Badge, Certificate, Domain, Enrollment, Level, Setting, User
 
 DOMAIN_SELECTION_SEMESTER = 3
 COMMON_DOMAIN_NAME = "Common Assessments"
@@ -47,13 +49,22 @@ def semester_of(user: User) -> int:
 
 def current_enrollment(db: Session, user: User) -> Enrollment | None:
     """The enrollment the student is working on now: the common track in Semesters 1-2, a domain from Semester 3.
-    Active enrollments come first, newest first."""
+    Active enrollments come first, newest first. Completed enrollments are excluded from the active view."""
     want_common = semester_of(user) < DOMAIN_SELECTION_SEMESTER
     rows = db.execute(
         select(Enrollment, Domain).join(Domain, Domain.id == Enrollment.domain_id)
-        .where(Enrollment.user_id == user.id).order_by(Enrollment.status.asc(), Enrollment.id.desc())
+        .where(Enrollment.user_id == user.id, Enrollment.status != "completed")
+        .order_by(Enrollment.status.asc(), Enrollment.id.desc())
     ).all()
     return next((enr for enr, dom in rows if dom.is_common == want_common), None)
+
+
+def active_domain_enrollment(db: Session, user: User) -> Enrollment | None:
+    """The student's single active non-common domain enrollment, or None."""
+    return db.scalar(
+        select(Enrollment)
+        .where(Enrollment.user_id == user.id, Enrollment.status == "active", Enrollment.is_common_enrollment.is_(False))
+    )
 
 
 def ensure_common_enrollment(db: Session, user: User) -> None:
@@ -65,7 +76,7 @@ def ensure_common_enrollment(db: Session, user: User) -> None:
         return
     exists = db.scalar(select(Enrollment.id).where(Enrollment.user_id == user.id, Enrollment.domain_id == common.id))
     if exists is None:
-        db.add(Enrollment(user_id=user.id, domain_id=common.id, current_level=semester_of(user)))
+        db.add(Enrollment(user_id=user.id, domain_id=common.id, current_level=semester_of(user), is_common_enrollment=True))
         db.flush()
 
 
@@ -121,6 +132,7 @@ def record_attempt(
         "certificate": None, "new_semester": None,
     }
     if passed:
+        import secrets as _secrets
         first = attempt_no == 1
         outcome["points_earned"] = cfg["first_attempt_points"] if first else cfg["retry_points"]
         enr.points += outcome["points_earned"]
@@ -131,9 +143,50 @@ def record_attempt(
             user.semester = semester_of(user) + 1
             outcome["new_semester"] = user.semester
             db.add(ActivityLog(user_id=user.id, action=f"{user.name} moved up to Semester {user.semester}"))
-        code = f"CERT-{level.domain_id}-{level.number}-{user.id}"
-        db.add(Certificate(user_id=user.id, level_id=level.id, code=code, first_attempt=first))
-        outcome["certificate"] = code
+        db.flush()
+
+        # Award badge for this level (idempotent)
+        badge = db.scalar(
+            select(Badge).where(Badge.user_id == user.id, Badge.level_id == level.id).with_for_update()
+        )
+        if badge is None:
+            db.add(Badge(user_id=user.id, domain_id=level.domain_id, level_id=level.id))
+
+        # Check if all levels in this domain are passed → issue domain certificate + complete enrollment
+        passed_levels = db.scalar(
+            select(func.count(func.distinct(Attempt.level_id)))
+            .join(Level, Level.id == Attempt.level_id)
+            .where(Attempt.user_id == user.id, Level.domain_id == level.domain_id, Attempt.passed.is_(True))
+        ) or 0
+        if not common and passed_levels >= len(level.domain.levels):
+            # Idempotent lock
+            cert = db.scalar(
+                select(Certificate)
+                .where(Certificate.user_id == user.id, Certificate.domain_id == level.domain_id)
+                .with_for_update()
+            )
+            if cert:
+                outcome["certificate"] = cert.code
+            else:
+                code = f"CERT-D{level.domain_id}-U{user.id}-{_secrets.token_hex(4).upper()}"
+                cert = Certificate(
+                    user_id=user.id,
+                    level_id=level.id,
+                    domain_id=level.domain_id,
+                    code=code,
+                    first_attempt=False,
+                    student_name=user.name,
+                    domain_name=level.domain.name,
+                    verification_token=_secrets.token_hex(16),
+                    status="valid",
+                )
+                db.add(cert)
+                outcome["certificate"] = code
+            # Mark enrollment completed in the same transaction as the cert
+            if enr.status == "active":
+                enr.status = "completed"
+                enr.completed_at = datetime.now(timezone.utc)
+                outcome["domain_completed"] = True
         db.add(ActivityLog(user_id=user.id, action=f"{user.name} cleared {level.name}"))
     elif not common and attempt_no >= cfg["max_attempts"]:
         enr.status = "removed"

@@ -23,8 +23,7 @@ export function useFetch<T>(path: string | null): FetchState<T> {
       .then((res) => { if (!cancelled) setResult({ key, data: res.data, error: '' }) })
       .catch((err) => { if (!cancelled) setResult({ key, data: null, error: errorMessage(err) }) })
     return () => { cancelled = true }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, attempt])
+  }, [path, key])
 
   const current = key !== null && result.key === key
   return {

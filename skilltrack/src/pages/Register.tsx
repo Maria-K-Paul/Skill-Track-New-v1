@@ -6,8 +6,7 @@ import AuthLayout, { Icon, Logo } from '../components/AuthLayout'
 import { authButton, authField } from '../components/authStyles'
 import { HOME, useAuth } from '../context/AuthContext'
 
-const DEPARTMENTS = ['CSE', 'IT', 'ECE', 'EEE', 'MECH', 'AIML', 'AIDS','CYBERSECURITY','CHEMICAL','CIVIL','BIOTECHNOLOGY'
-]
+const DEPARTMENTS = ['CSE', 'IT', 'ECE', 'EEE', 'MECH', 'AIML', 'AIDS', 'CYBERSECURITY', 'CHEMICAL', 'CIVIL', 'BIOTECHNOLOGY']
 
 const ICONS = {
   user: 'M16 7a4 4 0 11-8 0 4 4 0 018 0zM4 21a8 8 0 0116 0',
@@ -89,8 +88,6 @@ export default function Register() {
             {DEPARTMENTS.map((d) => <option key={d}>{d}</option>)}
           </select>
         </Field>
-        {/* <p className="rounded-xl bg-indigo-50 px-3 py-2 text-xs text-indigo-700">Everyone starts with the Semester 1 common assessment. You move up as you clear each test.</p> */}
-
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Password" icon="lock">
             <input

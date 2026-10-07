@@ -56,3 +56,5 @@ class RateLimiter:
 login_failures = RateLimiter(10, 60, "Too many failed sign-in attempts. Wait a minute and try again.")
 # Exam-key attempts per student (keys are short, so guessing has to be slowed down)
 exam_start = RateLimiter(8, 60, "Too many attempts to start the exam. Wait a minute and try again.")
+# Public verification requests per IP
+verify_rate = RateLimiter(20, 60, "Too many verification requests. Wait a minute and try again.")

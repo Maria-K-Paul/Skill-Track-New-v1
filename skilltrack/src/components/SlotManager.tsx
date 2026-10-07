@@ -5,12 +5,12 @@ import { api, errorMessage } from '../api'
 interface CatalogDomain {
   id: number
   name: string
-  levels: { id: number; number: number; name: string }[]
 }
 
 interface SlotRow {
   id: number
-  level_id: number
+  domain_id: number
+  domain_name: string
   starts_at: string
   venue: string
   capacity: number
@@ -35,7 +35,6 @@ const fmt = (iso: string) =>
 export default function SlotManager() {
   const [catalog, setCatalog] = useState<CatalogDomain[]>([])
   const [domainId, setDomainId] = useState<number | null>(null)
-  const [levelId, setLevelId] = useState<number | null>(null)
   const [slots, setSlots] = useState<SlotRow[]>([])
   const [form, setForm] = useState(emptyForm)
   const [editingId, setEditingId] = useState<number | null>(null)
@@ -46,22 +45,20 @@ export default function SlotManager() {
       .then((res) => {
         setCatalog(res.data)
         setDomainId(res.data[0]?.id ?? null)
-        setLevelId(res.data[0]?.levels[0]?.id ?? null)
       })
       .catch((err) => setError(errorMessage(err)))
   }, [])
 
   const loadSlots = useCallback(async () => {
-    if (levelId === null) return
-    const res = await api.get<SlotRow[]>('/manage/slots', { params: { level_id: levelId } })
+    if (domainId === null) return
+    const res = await api.get<SlotRow[]>('/manage/slots', { params: { domain_id: domainId } })
     setSlots(res.data)
-  }, [levelId])
+  }, [domainId])
 
   useEffect(() => { loadSlots().catch((err) => setError(errorMessage(err))) }, [loadSlots])
 
   function pickDomain(id: number) {
     setDomainId(id)
-    setLevelId(catalog.find((d) => d.id === id)?.levels[0]?.id ?? null)
     resetForm()
   }
 
@@ -77,7 +74,7 @@ export default function SlotManager() {
     const payload = { starts_at: new Date(form.when).toISOString(), venue: form.venue, capacity: form.capacity }
     try {
       if (editingId) await api.patch(`/manage/slots/${editingId}`, payload)
-      else await api.post('/manage/slots', { level_id: levelId, ...payload })
+      else await api.post('/manage/slots', { domain_id: domainId, ...payload })
       resetForm()
       await loadSlots()
     } catch (err) {
@@ -102,25 +99,26 @@ export default function SlotManager() {
     setError('')
   }
 
-  const levels = catalog.find((d) => d.id === domainId)?.levels ?? []
   const now = Date.now()
+  const selectedDomain = catalog.find((d) => d.id === domainId)
 
   if (catalog.length === 0) return <p className="text-sm text-slate-500">{error || 'No domains to manage yet.'}</p>
 
   return (
     <>
       <div className="mb-3 flex flex-wrap gap-2">
-        {catalog.length > 1 && (
-          <select value={domainId ?? ''} onChange={(e) => pickDomain(Number(e.target.value))} className={inputClass} aria-label="Domain">
-            {catalog.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-          </select>
-        )}
-        <select value={levelId ?? ''} onChange={(e) => { setLevelId(Number(e.target.value)); resetForm() }} className={inputClass} aria-label="Level">
-          {levels.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+        <select value={domainId ?? ''} onChange={(e) => pickDomain(Number(e.target.value))} className={inputClass} aria-label="Domain">
+          <option value="">Select a domain...</option>
+          {catalog.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
         </select>
+        {selectedDomain && (
+          <p className="flex items-center rounded-xl bg-indigo-50 px-3 py-2 text-sm text-indigo-700">
+            <span className="font-semibold">{selectedDomain.name}</span> - Students of any level can book these slots
+          </p>
+        )}
       </div>
 
-      {slots.length === 0 && <p className="text-sm text-slate-500">No slots for this level yet. Students cannot book until you add one.</p>}
+      {slots.length === 0 && <p className="text-sm text-slate-500">No slots for this domain yet. Students cannot book until you add one.</p>}
       <ul className="divide-y divide-slate-100 text-sm">
         {slots.map((s) => {
           const past = new Date(s.starts_at).getTime() <= now

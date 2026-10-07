@@ -6,6 +6,7 @@ import Card from '../components/Card'
 import { Icon, Logo } from '../components/AuthLayout'
 import { authField } from '../components/authStyles'
 import { useAuth } from '../context/AuthContext'
+import { useFetch } from '../useFetch'
 
 type Stage = 'details' | 'key' | 'test' | 'done'
 
@@ -13,6 +14,8 @@ interface Session {
   session_id: number
   level: { id: number; name: string; pass_mark: number }
   seconds_left: number
+  server_time: string
+  ends_at: string
   questions: { id: number; text: string; options: string[] }[]
 }
 
@@ -121,9 +124,15 @@ function ScoreRing({ score, passed }: { score: number; passed: boolean }) {
   )
 }
 
+interface ActiveDomainCheck {
+  active_enrollment: { domain_id: number; domain_name: string } | null
+  can_enroll: boolean
+}
+
 export default function ExamDashboard() {
   const { user } = useAuth()
   const [stage, setStage] = useState<Stage>('details')
+  const domainCheck = useFetch<ActiveDomainCheck>('/domains?check_only=1')
   const [details, setDetails] = useState({ name: user?.name ?? '', regNo: user?.reg_no ?? '' })
   const [keyInput, setKeyInput] = useState('')
   const [error, setError] = useState('')
@@ -136,7 +145,7 @@ export default function ExamDashboard() {
   const [now, setNow] = useState(() => Date.now())
   const [mySlot, setMySlot] = useState<MySlot | null>(null)
   const [opensAt, setOpensAt] = useState<number | null>(null)
-  const startedAt = useRef(0)
+  const [serverTimeOffset, setServerTimeOffset] = useState(0) // Client time - Server time offset in ms
   const submitting = useRef(false)
   const away = useRef(false)
 
@@ -155,7 +164,8 @@ export default function ExamDashboard() {
   const startsTime = mySlot ? new Date(mySlot.starts_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : ''
   const startsDate = mySlot ? new Date(mySlot.starts_at).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : ''
 
-  const secondsLeft = session ? session.seconds_left - Math.floor((now - startedAt.current) / 1000) : 0
+  // Calculate remaining time based on server-provided end time
+  const secondsLeft = session ? Math.max(0, Math.floor((new Date(session.ends_at).getTime() - (now - serverTimeOffset)) / 1000)) : 0
 
   useEffect(() => {
     if (stage !== 'test' && !notYetOpen) return
@@ -163,15 +173,47 @@ export default function ExamDashboard() {
     return () => clearInterval(id)
   }, [stage, notYetOpen])
 
+  // Sync with server time every 30 seconds during exam to prevent clock drift/manipulation
+  useEffect(() => {
+    if (stage !== 'test' || !session) return
+    const syncTime = async () => {
+      try {
+        const res = await api.get<{ server_time: string; ends_at: string }>(`/exam/sessions/${session.session_id}/time`)
+        const clientTime = Date.now()
+        const serverTime = new Date(res.data.server_time).getTime()
+        setServerTimeOffset(clientTime - serverTime)
+        // Update session end time in case of any discrepancies
+        setSession({ ...session, ends_at: res.data.ends_at })
+      } catch {
+        // Silently fail - continue with existing offset
+      }
+    }
+    const id = setInterval(syncTime, 30000) // Sync every 30 seconds
+    return () => clearInterval(id)
+  }, [stage, session])
+
   // Safe-exam lockdown: record every time the candidate leaves the exam window
   useEffect(() => {
     if (stage !== 'test') return
     // One "leave" can fire blur, visibilitychange and fullscreenchange together, so count it once
+    let debounceTimer: NodeJS.Timeout | null = null
     const leave = (reason: string) => {
       if (away.current || submitting.current) return
       away.current = true
-      setViolations((v) => v + 1)
-      setWarning(reason)
+
+      // Clear any pending debounce to prevent multiple counts
+      if (debounceTimer) clearTimeout(debounceTimer)
+
+      setViolations((v) => {
+        setWarning(reason)
+        return v + 1
+      })
+
+      // Allow new violations after 1 second debounce
+      debounceTimer = setTimeout(() => {
+        away.current = false
+        debounceTimer = null
+      }, 1000)
     }
     const onVisibility = () => { if (document.hidden) leave('You switched to another tab or window.') }
     const onBlur = () => leave('The exam window lost focus (Alt-Tab or another app).')
@@ -188,6 +230,7 @@ export default function ExamDashboard() {
     document.addEventListener('fullscreenchange', onFullscreen)
     document.addEventListener('keydown', onKey)
     return () => {
+      if (debounceTimer) clearTimeout(debounceTimer)
       document.removeEventListener('visibilitychange', onVisibility)
       window.removeEventListener('blur', onBlur)
       document.removeEventListener('fullscreenchange', onFullscreen)
@@ -203,8 +246,10 @@ export default function ExamDashboard() {
     setError('')
     try {
       const res = await api.post<Session>('/exam/start', { key: keyInput })
-      startedAt.current = Date.now()
-      setNow(Date.now())
+      const clientTime = Date.now()
+      const serverTime = new Date(res.data.server_time).getTime()
+      setServerTimeOffset(clientTime - serverTime) // Store offset for time calculations
+      setNow(clientTime)
       setSession(res.data)
       setAnswers({})
       setViolations(0)
@@ -265,7 +310,7 @@ export default function ExamDashboard() {
     const lowTime = secondsLeft < 60
     return (
       <div
-        className="fixed inset-0 z-50 select-none overflow-y-auto bg-slate-50"
+        className="fixed inset-0 z-50 select-none overflow-y-auto bg-slate-50 dark:bg-slate-950"
         onCopy={(e) => e.preventDefault()}
         onPaste={(e) => e.preventDefault()}
         onCut={(e) => e.preventDefault()}
@@ -296,15 +341,15 @@ export default function ExamDashboard() {
         <div className={`mx-auto grid max-w-6xl gap-6 px-4 py-6 lg:grid-cols-[1fr_16rem] ${warning ? 'pointer-events-none blur-md' : ''}`}>
           <div className="space-y-5">
             <div>
-              <h1 className="text-2xl font-bold text-slate-900">{session.level.name}</h1>
-              <p className="text-sm text-slate-500">Pass mark {session.level.pass_mark}% · {total} questions</p>
+              <h1 className="text-2xl font-bold text-slate-900 dark:text-white">{session.level.name}</h1>
+              <p className="text-sm text-slate-500 dark:text-slate-400">Pass mark {session.level.pass_mark}% · {total} questions</p>
             </div>
 
             {session.questions.map((q, i) => (
-              <section key={q.id} id={`q-${q.id}`} className="scroll-mt-28 rounded-2xl border border-slate-100 bg-white p-5 shadow-lg shadow-indigo-100/40">
+              <section key={q.id} id={`q-${q.id}`} className="scroll-mt-28 rounded-2xl border border-slate-100 bg-white p-5 shadow-lg shadow-indigo-100/40 dark:border-slate-700 dark:bg-slate-900 dark:shadow-slate-950/40">
                 <div className="mb-4 flex items-start gap-3">
-                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-50 text-sm font-bold text-indigo-600">{i + 1}</span>
-                  <p className="pt-1 text-sm font-semibold text-slate-800">{q.text}</p>
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-50 text-sm font-bold text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-400">{i + 1}</span>
+                  <p className="pt-1 text-sm font-semibold text-slate-800 dark:text-slate-100">{q.text}</p>
                 </div>
                 <div className="space-y-2">
                   {q.options.map((opt, idx) => {
@@ -312,9 +357,9 @@ export default function ExamDashboard() {
                     return (
                       <label
                         key={opt}
-                        className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 text-sm transition ${picked ? 'border-indigo-500 bg-indigo-50 font-medium text-indigo-900 ring-4 ring-indigo-100' : 'border-slate-200 hover:border-indigo-300 hover:bg-slate-50'}`}
+                        className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 text-sm transition ${picked ? 'border-indigo-500 bg-indigo-50 font-medium text-indigo-900 ring-4 ring-indigo-100 dark:border-indigo-500 dark:bg-indigo-900/30 dark:text-indigo-200 dark:ring-indigo-900/60' : 'border-slate-200 hover:border-indigo-300 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:border-indigo-600 dark:hover:bg-slate-800'}`}
                       >
-                        <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 ${picked ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-slate-300'}`}>
+                        <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 ${picked ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-slate-300 dark:border-slate-600'}`}>
                           {picked && ico('check', 'h-3 w-3')}
                         </span>
                         <input className="sr-only" type="radio" name={`q${q.id}`} checked={picked} onChange={() => setAnswers({ ...answers, [q.id]: idx })} />
@@ -328,22 +373,22 @@ export default function ExamDashboard() {
           </div>
 
           <aside className="lg:sticky lg:top-24 lg:self-start">
-            <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-lg shadow-indigo-100/40">
-              <p className="text-sm font-semibold text-slate-800">Question palette</p>
-              <p className="mb-3 text-xs text-slate-500">{answered} of {total} answered</p>
+            <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-lg shadow-indigo-100/40 dark:border-slate-700 dark:bg-slate-900 dark:shadow-slate-950/40">
+              <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Question palette</p>
+              <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">{answered} of {total} answered</p>
               <div className="grid grid-cols-5 gap-2">
                 {session.questions.map((q, i) => (
                   <button
                     key={q.id} type="button"
                     onClick={() => document.getElementById(`q-${q.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
-                    className={`h-9 rounded-lg text-xs font-bold transition hover:-translate-y-0.5 ${answers[q.id] !== undefined ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+                    className={`h-9 rounded-lg text-xs font-bold transition hover:-translate-y-0.5 ${answers[q.id] !== undefined ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-400 dark:hover:bg-slate-600'}`}
                   >
                     {i + 1}
                   </button>
                 ))}
               </div>
               {error && <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">{error}</p>}
-              <button disabled={busy} onClick={submit} className="group inline-flex items-center justify-center gap-2 mt-4 w-full rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-500/25 transition-all hover:-translate-y-0.5 hover:bg-indigo-500 hover:shadow-indigo-500/40 active:translate-y-0 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none">
+              <button disabled={busy} onClick={submit} className="mt-4 w-full group inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-500/25 transition-all hover:-translate-y-0.5 hover:bg-indigo-500 hover:shadow-indigo-500/40 active:translate-y-0 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none">
                 {busy ? 'Submitting…' : 'Submit answers'}
               </button>
             </div>
@@ -351,7 +396,7 @@ export default function ExamDashboard() {
         </div>
 
         {warning && (
-          <div role="alertdialog" aria-modal="true" className="fixed inset-0 z-60 flex items-center justify-center bg-slate-900/85 p-4 backdrop-blur-sm">
+          <div role="alertdialog" aria-modal="true" className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/85 p-4 backdrop-blur-sm">
             <div className="w-full max-w-md rounded-3xl bg-white p-8 text-center shadow-2xl">
               <span className="mx-auto flex h-16 w-16 animate-pulse items-center justify-center rounded-full bg-red-100 text-red-600">{ico('alert', 'h-8 w-8')}</span>
               <h2 className="mt-4 text-2xl font-bold text-slate-900">Warning {Math.min(violations, MAX_VIOLATIONS)} of {MAX_VIOLATIONS}</h2>
@@ -372,8 +417,22 @@ export default function ExamDashboard() {
   }
 
   /* ---------- Pre-exam and result screens ---------- */
+
+  // Active-domain check for the pre-exam screens only
+  const hasActiveDomain = domainCheck.data?.active_enrollment != null
+  const noActiveDomain = !domainCheck.loading && domainCheck.data != null && !hasActiveDomain && stage !== 'done'
+
   return (
     <div className="mx-auto max-w-4xl space-y-6">
+      {noActiveDomain && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-800">
+          <p className="font-semibold text-base">No active domain</p>
+          <p className="mt-1">You must be enrolled in a domain to take the examination.</p>
+          <Link to="/student/domains" className="mt-3 inline-flex items-center gap-1 rounded-lg bg-amber-700 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-600">
+            Enroll in a Domain →
+          </Link>
+        </div>
+      )}
       <section className="relative overflow-hidden rounded-3xl bg-slate-950 p-6 text-white shadow-2xl sm:p-10">
         <div className="pointer-events-none absolute -right-20 -top-20 h-96 w-96 rounded-full bg-indigo-600/20 blur-3xl" />
         <div className="pointer-events-none absolute -bottom-32 left-1/4 h-96 w-96 rounded-full bg-purple-600/20 blur-3xl" />
