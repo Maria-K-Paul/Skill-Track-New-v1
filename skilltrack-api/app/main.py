@@ -10,14 +10,34 @@ from .database import Base, engine
 from .noshow import run_noshow_job
 from .routers import admin, ai, auth, certificates, exam, owner, slots, student
 
+# Create tables first
 Base.metadata.create_all(engine)
+
+# Run migrations on startup
+def _run_migrations() -> None:
+    """Run database migrations on startup."""
+    try:
+        # Import and run the migration script
+        import sys
+        from pathlib import Path
+        migrate_path = Path(__file__).parent.parent / "migrate_db.py"
+        if migrate_path.exists():
+            print("🔄 Running database migrations on startup...")
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("migrate_db", migrate_path)
+            migrate_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(migrate_module)
+            migrate_module.run_migration()
+        else:
+            print("⚠️ Migration script not found, skipping migrations")
+    except Exception as e:
+        print(f"⚠️ Migration warning: {e}")
+        # Don't fail startup if migrations fail - app might still work
 
 
 def _add_missing_columns() -> None:
-    """create_all never alters existing tables, so add columns introduced after the database was made."""
-    if "slot_id" not in {c["name"] for c in inspect(engine).get_columns("exam_keys")}:
-        with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE exam_keys ADD COLUMN slot_id INTEGER REFERENCES slots(id)"))
+    """Deprecated: Migrations now handled by migrate_db.py"""
+    pass
 
 
 def _complete_finished_enrollments() -> None:
@@ -75,7 +95,7 @@ def _complete_finished_enrollments() -> None:
         db.commit()
 
 
-_add_missing_columns()
+_run_migrations()
 _complete_finished_enrollments()
 
 app = FastAPI(title="SkillTrack API")
