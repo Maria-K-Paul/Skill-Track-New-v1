@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
+import axios from 'axios'
 import { api, errorMessage } from '../api'
 import Card from '../components/Card'
 import { Icon, StudentIllustration } from '../components/AuthLayout'
@@ -76,7 +77,33 @@ interface AiPrep {
   study_plan: string[]
   requirements: string[]
 }
-interface AiAdvice { topic: string; tips: string[] }
+
+interface SkillGapReport {
+  id: number
+  assessment_id: number | null
+  overall_summary: string
+  readiness: string
+  strengths: string[]
+  gaps: Array<{
+    topic: string
+    score: number
+    classification: string
+    severity: string
+    confidence: string
+    trend: string
+    reason: string
+    priority: number
+  }>
+  next_level_priorities: Array<{
+    topic: string
+    reason: string
+    prerequisites: string[]
+    actions: string[]
+  }>
+  recommended_plan: string[]
+  confidence: string
+  created_at: string
+}
 
 const PATHS = {
   sparkle: 'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z',
@@ -844,14 +871,25 @@ export default function StudentDashboard() {
   const [cancelConfirm, setCancelConfirm] = useState(false)
   const [changeSlotId, setChangeSlotId] = useState<number | null>(null)
   const [changeBusy, setChangeBusy] = useState(false)
+  const [skillGapAttempt, setSkillGapAttempt] = useState(0)
+  const [skillGapState, setSkillGapState] = useState<{
+    data: SkillGapReport | null
+    error: string
+    loading: boolean
+  }>({ data: null, error: '', loading: false })
+  const skillGapGeneration = useRef<Promise<SkillGapReport> | null>(null)
 
   const hasActiveLevel = !!data?.levels.some((l) => l.status === 'active')
+  const hasCompletedAssessment = !!data?.levels.some((l) => l.attempts_used > 0)
   const recs = useFetch<{ recommendations: AiRec[] }>(data && (data.user.semester ?? 1) >= 3 ? '/ai/recommendations' : null)
   // Load the AI cards one after another, so the free Gemini tier's requests-per-minute limit is not hit
   // Only fetch if previous fetch succeeded or wasn't attempted
   const prep = useFetch<AiPrep>(hasActiveLevel && !recs.loading && !recs.error ? '/ai/prep' : null)
-  const advice = useFetch<{ advice: AiAdvice[] }>(data?.skill_gap && !recs.loading && !prep.loading && !recs.error && !prep.error ? '/ai/gap-advice' : null)
   const credentials = useFetch<Credentials>(data ? '/me/credentials' : null)
+  const skillGapReport: FetchState<SkillGapReport> = {
+    ...skillGapState,
+    retry: () => setSkillGapAttempt((attempt) => attempt + 1),
+  }
 
   const load = useCallback(async () => {
     try {
@@ -864,6 +902,50 @@ export default function StudentDashboard() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    if (!data) return
+    let cancelled = false
+    const setResult = (result: SkillGapReport | null, error = '') => {
+      if (!cancelled) setSkillGapState({ data: result, error, loading: false })
+    }
+
+    async function loadSkillGapReport() {
+      setSkillGapState({ data: null, error: '', loading: true })
+      try {
+        const latest = await api.get<SkillGapReport>('/ai/skill-gap/latest')
+        setResult(latest.data)
+        return
+      } catch (err) {
+        if (!axios.isAxiosError(err) || err.response?.status !== 404) {
+          setResult(null, errorMessage(err, 'Could not load your skill-gap analysis'))
+          return
+        }
+      }
+
+      if (!hasCompletedAssessment) {
+        setResult(null)
+        return
+      }
+
+      let generation: Promise<SkillGapReport> | null = null
+      try {
+        generation = skillGapGeneration.current
+        if (!generation) {
+          generation = api.post<SkillGapReport>('/ai/skill-gap/analyze').then((res) => res.data)
+          skillGapGeneration.current = generation
+        }
+        setResult(await generation)
+      } catch (err) {
+        setResult(null, errorMessage(err, 'Could not generate your skill-gap analysis'))
+      } finally {
+        if (skillGapGeneration.current === generation) skillGapGeneration.current = null
+      }
+    }
+
+    loadSkillGapReport()
+    return () => { cancelled = true }
+  }, [data !== null, hasCompletedAssessment, skillGapAttempt])
 
   async function act(request: () => Promise<unknown>) {
     setActionError('')
@@ -1135,34 +1217,67 @@ export default function StudentDashboard() {
         </div>
       )}
 
-      <Card title={data.skill_gap ? `Skill-gap analysis · ${data.skill_gap.level_name}` : 'Skill-gap analysis'} icon={ico('chart')}>
-        {data.skill_gap ? (
-          <>
-            <ul className="space-y-3">
-              {data.skill_gap.weak.map((w) => (
-                <li key={w.topic} className="text-sm">
-                  <div className="flex justify-between font-medium dark:text-slate-100"><span>{w.topic}</span><span className="text-red-600 dark:text-red-400">{w.score}%</span></div>
-                  <div className="mt-1.5 h-2 rounded-full bg-slate-100 dark:bg-slate-700"><div className="h-2 rounded-full bg-red-500" style={{ width: `${w.score}%` }} /></div>
-                </li>
-              ))}
-            </ul>
-            <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">Topics to improve before your next attempt.</p>
-            <div className="mt-4 border-t border-slate-100 pt-4 dark:border-slate-700">
-              <p className="flex items-center gap-2 text-sm font-semibold dark:text-slate-100">{ico('sparkle', 'h-4 w-4 text-indigo-500 dark:text-indigo-400')} How to improve</p>
-              <div className="mt-2"><AiStatus state={advice} /></div>
-              <ul className="mt-2 space-y-3 text-sm text-slate-600 dark:text-slate-300">
-                {advice.data?.advice.map((a) => (
-                  <li key={a.topic} className="rounded-xl bg-slate-50 p-3 dark:bg-slate-800">
-                    <span className="font-semibold text-slate-800 dark:text-slate-100">{a.topic}</span>
-                    <ul className="mt-1 list-disc pl-5 marker:text-indigo-500">{a.tips.map((t) => <li key={t}>{t}</li>)}</ul>
+      <Card title="AI skill gap analysis" icon={ico('chart')}>
+        <AiStatus state={skillGapReport} />
+        {skillGapReport.data ? (
+          <div className="space-y-4 text-sm text-slate-600">
+            <div className="rounded-xl bg-indigo-50 px-3 py-2">
+              <div className="text-xs uppercase tracking-[0.18em] text-indigo-500">Overall readiness</div>
+              <div className="mt-1 text-lg font-semibold text-slate-900">{skillGapReport.data.readiness}</div>
+              <p className="mt-1 text-slate-600">{skillGapReport.data.overall_summary}</p>
+            </div>
+
+            <div>
+              <p className="mb-2 text-sm font-semibold text-slate-800">Strengths</p>
+              <ul className="list-disc space-y-1 pl-5 marker:text-indigo-500">
+                {skillGapReport.data.strengths.map((s) => <li key={s}>{s}</li>)}
+              </ul>
+            </div>
+
+            <div>
+              <p className="mb-2 text-sm font-semibold text-slate-800">Priority gaps</p>
+              <ul className="space-y-3">
+                {skillGapReport.data.gaps.slice(0, 3).map((g) => (
+                  <li key={g.topic} className="rounded-xl bg-slate-50 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-semibold text-slate-800">{g.topic}</span>
+                      <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-red-700">{g.severity}</span>
+                    </div>
+                    <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
+                      <span>Score: {g.score}%</span>
+                      <span>Trend: {g.trend}</span>
+                    </div>
+                    <p className="mt-2 text-xs text-slate-600">{g.reason}</p>
                   </li>
                 ))}
               </ul>
             </div>
-          </>
-        ) : (
-          <p className="rounded-xl bg-slate-50 px-3 py-2 text-sm text-slate-500 dark:bg-slate-800 dark:text-slate-400">Your skill-gap analysis appears after your first test.</p>
-        )}
+
+            <div>
+              <p className="mb-2 text-sm font-semibold text-slate-800">Next-level preparation</p>
+              <ul className="space-y-3">
+                {skillGapReport.data.next_level_priorities.map((item) => (
+                  <li key={item.topic} className="rounded-xl bg-amber-50 p-3">
+                    <div className="font-semibold text-slate-800">{item.topic}</div>
+                    <p className="mt-1 text-xs text-slate-600">{item.reason}</p>
+                    <ul className="mt-2 list-disc space-y-1 pl-5 text-xs marker:text-amber-700">
+                      {item.actions.map((a) => <li key={a}>{a}</li>)}
+                    </ul>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div>
+              <p className="mb-2 text-sm font-semibold text-slate-800">Study plan</p>
+              <ol className="list-decimal space-y-1 pl-5 marker:font-semibold marker:text-indigo-500">
+                {skillGapReport.data.recommended_plan.map((step) => <li key={step}>{step}</li>)}
+              </ol>
+            </div>
+          </div>
+        ) : !hasCompletedAssessment && !skillGapReport.loading && !skillGapReport.error ? (
+          <p className="rounded-xl bg-slate-50 px-3 py-2 text-sm text-slate-500">Your skill-gap analysis appears after your first assessment.</p>
+        ) : null}
       </Card>
 
       <div className="grid gap-6 lg:grid-cols-2">

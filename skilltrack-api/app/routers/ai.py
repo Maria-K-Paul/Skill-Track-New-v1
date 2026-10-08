@@ -7,9 +7,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import ai
+from ..ai_engine.skill_gap import run_skill_gap_agent
 from ..database import get_db
 from ..deps import require_roles
-from ..models import AiCache, Attempt, Domain, Enrollment, Level, Question, User
+from ..models import AiCache, Attempt, Domain, Enrollment, Level, Question, SkillGapAnalysis, User
 from ..rules import DOMAIN_SELECTION_SEMESTER, current_enrollment, level_is_open, semester_of
 
 router = APIRouter(prefix="/ai", tags=["ai"])
@@ -47,6 +48,10 @@ class GapAdvice(BaseModel):
 
 class GapAdviceOut(BaseModel):
     advice: list[GapAdvice]
+
+
+class SkillGapAnalyzeIn(BaseModel):
+    assessment_id: int | None = None
 
 
 # ---------- Helpers ----------
@@ -193,3 +198,65 @@ def gap_advice(user: User = Depends(student_only), db: Session = Depends(get_db)
         return {"advice": [a.model_dump() for a in result.advice if a.topic in wanted]}
 
     return _cached(db, user, "gap-advice", f"level:{level.id}:{_digest(gaps)}", build)
+
+
+@router.post("/skill-gap/analyze")
+def analyze_skill_gap(
+    body: SkillGapAnalyzeIn | None = None,
+    user: User = Depends(student_only),
+    db: Session = Depends(get_db),
+):
+    """Run the skill-gap agent for the authenticated student and persist the structured report."""
+    assessment_id = (body.assessment_id if body else None)
+    try:
+        report = run_skill_gap_agent(user.id, assessment_id, db)
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive guard for Gemini or DB faults
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Skill-gap analysis failed: {exc}") from exc
+    return report
+
+
+@router.get("/skill-gap/latest")
+def latest_skill_gap(user: User = Depends(student_only), db: Session = Depends(get_db)):
+    row = db.scalar(
+        select(SkillGapAnalysis).where(SkillGapAnalysis.user_id == user.id).order_by(SkillGapAnalysis.created_at.desc(), SkillGapAnalysis.id.desc())
+    )
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No skill-gap analysis has been generated yet")
+    return {
+        "id": row.id,
+        "assessment_id": row.assessment_id,
+        "overall_summary": row.overall_summary,
+        "readiness": row.readiness,
+        "strengths": row.strengths,
+        "gaps": row.gaps,
+        "next_level_priorities": row.next_level_priorities,
+        "recommended_plan": row.recommended_plan,
+        "priority_topics": row.priority_topics,
+        "confidence": row.confidence,
+        "created_at": row.created_at.isoformat(),
+    }
+
+
+@router.get("/skill-gap/history")
+def skill_gap_history(user: User = Depends(student_only), db: Session = Depends(get_db)):
+    rows = db.scalars(
+        select(SkillGapAnalysis).where(SkillGapAnalysis.user_id == user.id).order_by(SkillGapAnalysis.created_at.desc(), SkillGapAnalysis.id.desc())
+    ).all()
+    return [
+        {
+            "id": row.id,
+            "assessment_id": row.assessment_id,
+            "overall_summary": row.overall_summary,
+            "readiness": row.readiness,
+            "strengths": row.strengths,
+            "gaps": row.gaps,
+            "next_level_priorities": row.next_level_priorities,
+            "recommended_plan": row.recommended_plan,
+            "priority_topics": row.priority_topics,
+            "confidence": row.confidence,
+            "created_at": row.created_at.isoformat(),
+        }
+        for row in rows
+    ]
