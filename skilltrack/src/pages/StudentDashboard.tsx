@@ -673,8 +673,9 @@ function SlotBookingCard({
     setBookBusy(true)
     setBookErr('')
     try {
-      await onAct(() => api.post(`/slots/${slotId}/book`, { acknowledgement: true }))
+      await api.post(`/slots/${slotId}/book`, { acknowledgement: true })
       setBookingSlot(null)
+      onAct(() => Promise.resolve())
     } catch (e) {
       setBookErr(errorMessage(e as Error))
     } finally {
@@ -692,8 +693,9 @@ function SlotBookingCard({
     if (!active_booking) return
     setChangeBusy(true)
     try {
-      await onAct(() => api.post(`/me/bookings/${active_booking.booking_id}/change`, { new_slot_id: newSlotId }))
+      await api.post(`/me/bookings/${active_booking.booking_id}/change`, { new_slot_id: newSlotId })
       setChangeSlotId(null)
+      onAct(() => Promise.resolve())
     } catch (e) {
       // bubble up via onAct error handling isn't available here — handle inline
       alert(errorMessage(e as Error))
@@ -848,9 +850,8 @@ export default function StudentDashboard() {
   const hasActiveLevel = !!data?.levels.some((l) => l.status === 'active')
   const recs = useFetch<{ recommendations: AiRec[] }>(data && (data.user.semester ?? 1) >= 3 ? '/ai/recommendations' : null)
   // Load the AI cards one after another, so the free Gemini tier's requests-per-minute limit is not hit
-  // Only fetch if previous fetch succeeded or wasn't attempted
-  const prep = useFetch<AiPrep>(hasActiveLevel && !recs.loading && !recs.error ? '/ai/prep' : null)
-  const advice = useFetch<{ advice: AiAdvice[] }>(data?.skill_gap && !recs.loading && !prep.loading && !recs.error && !prep.error ? '/ai/gap-advice' : null)
+  const prep = useFetch<AiPrep>(hasActiveLevel && !recs.loading ? '/ai/prep' : null)
+  const advice = useFetch<{ advice: AiAdvice[] }>(data?.skill_gap && !recs.loading && !prep.loading ? '/ai/gap-advice' : null)
   const credentials = useFetch<Credentials>(data ? '/me/credentials' : null)
 
   const load = useCallback(async () => {
@@ -877,20 +878,18 @@ export default function StudentDashboard() {
 
   async function downloadCertificate(code: string) {
     setActionError('')
-    let url: string | null = null
     try {
       const res = await api.get<Blob>(`/me/certificates/${code}/pdf`, { responseType: 'blob' })
-      url = URL.createObjectURL(res.data)
+      const url = URL.createObjectURL(res.data)
       const link = document.createElement('a')
       link.href = url
       link.download = `${code}.pdf`
       document.body.appendChild(link)
       link.click()
       link.remove()
+      URL.revokeObjectURL(url)
     } catch (err) {
       setActionError(errorMessage(err, 'Could not download the certificate'))
-    } finally {
-      if (url) URL.revokeObjectURL(url)
     }
   }
 
@@ -966,8 +965,8 @@ export default function StudentDashboard() {
       {/* Semester stepper */}
       <Card title="Semester progress" icon={ico('cap')}>
         <div className="relative">
-          <div className="absolute top-5 h-1.5 rounded-full bg-slate-100/80 shadow-inner" style={{ left: edge, right: edge }}>
-            <div className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 shadow-md transition-all duration-700" style={{ width: `${semPct}%` }} />
+          <div className="absolute top-5 h-1.5 rounded-full bg-slate-100/80 shadow-inner dark:bg-slate-700/80" style={{ left: edge, right: edge }}>
+            <div className="h-full rounded-full bg-linear-to-r from-indigo-500 to-purple-500 shadow-md transition-all duration-700" style={{ width: `${semPct}%` }} />
           </div>
           <ol className="relative grid" style={{ gridTemplateColumns: `repeat(${semesters.length}, minmax(0, 1fr))` }}>
             {semesters.map((s) => {
@@ -999,10 +998,10 @@ export default function StudentDashboard() {
             {(recs.data?.recommendations ?? []).map((r) => (
               <li key={r.domain} className="rounded-xl bg-slate-50 p-3 dark:bg-slate-800">
                 <div className="flex justify-between text-sm font-semibold">
-                  <span>{r.domain}</span><span className="text-indigo-600">{r.match}% match</span>
+                  <span className="dark:text-slate-100">{r.domain}</span><span className="text-indigo-600 dark:text-indigo-400">{r.match}% match</span>
                 </div>
-                <div className="mt-2 h-2 rounded-full bg-slate-100/80 shadow-inner">
-                  <div className="h-2 rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-700" style={{ width: `${r.match}%` }} />
+                <div className="mt-2 h-2 rounded-full bg-slate-100/80 shadow-inner dark:bg-slate-700">
+                  <div className="h-2 rounded-full bg-linear-to-r from-indigo-500 to-purple-500 transition-all duration-700" style={{ width: `${r.match}%` }} />
                 </div>
                 <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">{r.reason}</p>
               </li>
@@ -1051,9 +1050,7 @@ export default function StudentDashboard() {
                 </>
               ) : (
                 <p className="mt-2 text-sm text-slate-500">
-                  {enrollment
-                    ? `Earn ${data.points_to_unlock - data.total_points} more points to unlock another domain.`
-                    : 'Start earning points by completing levels.'}
+                  Earn <span className="font-semibold text-indigo-600">{data.points_to_unlock - data.total_points} more points</span> to unlock your next domain.
                 </p>
               )}
               <p className="mt-4 inline-flex items-center gap-2 rounded-full bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-800">

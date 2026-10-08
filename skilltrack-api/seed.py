@@ -114,10 +114,10 @@ def seed_domains(db) -> None:
     db.commit()
 
 
-def add_slots(db, level_id: int) -> None:
+def add_slots(db, domain_id: int) -> None:
     for day, hour, minute, venue, capacity in SLOTS:
         db.add(models.Slot(
-            level_id=level_id, starts_at=datetime(2026, 10, day, hour, minute, tzinfo=timezone.utc),
+            domain_id=domain_id, starts_at=datetime(2026, 10, day, hour, minute, tzinfo=timezone.utc),
             venue=venue, capacity=capacity,
         ))
 
@@ -143,8 +143,8 @@ def seed_common(db) -> None:
                     level_id=level.id, text=text, options=options, answer_index=answer,
                     difficulty=difficulty, topic=topic,
                 ))
-        if db.scalar(select(models.Slot.id).where(models.Slot.level_id == level.id)) is None:
-            add_slots(db, level.id)
+    if db.scalar(select(models.Slot.id).where(models.Slot.domain_id == common.id)) is None:
+        add_slots(db, common.id)
     db.commit()
 
 
@@ -158,8 +158,8 @@ def seed_content(db) -> None:
                     level_id=level.id, text=text, options=options, answer_index=answer,
                     difficulty=difficulty, topic=topic,
                 ))
-    if db.scalar(select(models.Slot.id).where(models.Slot.level_id == domain.levels[0].id)) is None:
-        add_slots(db, domain.levels[0].id)
+    if db.scalar(select(models.Slot.id).where(models.Slot.domain_id == domain.id)) is None:
+        add_slots(db, domain.id)
     db.commit()
 
 
@@ -167,8 +167,8 @@ def seed_demo_students(db) -> None:
     """Made-up students with test history, for demonstrating the owner and admin dashboards."""
     domain = db.scalar(select(models.Domain).where(models.Domain.name == DOMAINS[0]))
     lv = {level.number: level for level in domain.levels}
-    if db.scalar(select(models.Slot.id).where(models.Slot.level_id == lv[3].id)) is None:
-        add_slots(db, lv[3].id)
+    if db.scalar(select(models.Slot.id).where(models.Slot.domain_id == domain.id)) is None:
+        add_slots(db, domain.id)
 
     # (name, email, reg_no, dept, sem, current_level, status, points, attempts[(level, no, score, passed)])
     people = [

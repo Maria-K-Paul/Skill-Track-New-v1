@@ -8,6 +8,8 @@ import ExamDashboard from './pages/ExamDashboard'
 import InvigilatorDashboard from './pages/InvigilatorDashboard'
 import Login from './pages/Login'
 import OwnerDashboard from './pages/OwnerDashboard'
+import SyllabusPage from './pages/SyllabusPage'
+import QuestionPaperPage from './pages/QuestionPaperPage'
 import Register from './pages/Register'
 import Verify from './pages/Verify'
 import StudentDashboard from './pages/StudentDashboard'
@@ -51,6 +53,8 @@ export default function App() {
         </Route>
         <Route element={<RequireRole roles={['owner']} />}>
           <Route path="/owner" element={<OwnerDashboard />} />
+          <Route path="/owner/syllabus" element={<SyllabusPage />} />
+          <Route path="/owner/questions" element={<QuestionPaperPage />} />
         </Route>
         <Route element={<RequireRole roles={['admin']} />}>
           <Route path="/admin" element={<AdminDashboard />} />

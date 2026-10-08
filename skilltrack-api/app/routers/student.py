@@ -40,7 +40,7 @@ def _as_utc(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def _booking_out(booking: SlotBooking, slot: Slot, level: Level) -> dict:
+def _booking_out(booking: SlotBooking, slot: Slot, domain: Domain, level: Level | None = None) -> dict:
     deadline = _as_utc(booking.change_cancel_deadline)
     remaining = max(0, int((deadline - _now()).total_seconds())) if deadline else 0
     return {
@@ -48,24 +48,13 @@ def _booking_out(booking: SlotBooking, slot: Slot, level: Level) -> dict:
         "slot_id": slot.id,
         "starts_at": slot.starts_at,
         "venue": slot.venue,
-        "level_name": level.name,
-        "domain_name": level.domain.name,
+        "level_name": level.name if level else domain.name,
+        "domain_name": domain.name,
         "booked_at": booking.booked_at,
         "change_cancel_deadline": deadline,
         "window_expired": remaining == 0,
         "seconds_remaining_in_window": remaining,
         "status": booking.status,
-    }
-
-
-def _build_active_enrollment(db: Session, active_enr, domain_id: int = None) -> dict:
-    """Safely build active enrollment dict with null-check for domain."""
-    if not active_enr:
-        return None
-    domain = db.get(Domain, active_enr.domain_id)
-    return {
-        "domain_id": active_enr.domain_id,
-        "domain_name": domain.name if domain else "Unknown Domain",
     }
 
 
@@ -140,17 +129,12 @@ def list_domains(
     # First domain needs only the semester gate; subsequent domains also need the points threshold
     points_unlocked = (completed_domain_count == 0) or (total_points >= cfg["points_to_unlock"])
 
-    active_enrollment_data = None
-    if active_enr:
-        domain = db.get(Domain, active_enr.domain_id)
-        active_enrollment_data = {
-            "domain_id": active_enr.domain_id,
-            "domain_name": domain.name if domain else "Unknown Domain",
-        }
-
     return {
         "domains": result,
-        "active_enrollment": active_enrollment_data,
+        "active_enrollment": {
+            "domain_id": active_enr.domain_id,
+            "domain_name": db.get(Domain, active_enr.domain_id).name,
+        } if active_enr else None,
         "can_enroll": semester_of(user) >= DOMAIN_SELECTION_SEMESTER,
         "points_to_unlock": cfg["points_to_unlock"],
         "student_points": total_points,
@@ -241,7 +225,10 @@ def domain_detail(
         "total_duration_min": sum(lv.duration_min for lv in domain.levels),
         "levels": levels_out,
         "enrollment_status": enr.status if enr else None,
-        "active_enrollment": _build_active_enrollment(db, active_enr, domain_id) if active_enr and active_enr.domain_id != domain_id else None,
+        "active_enrollment": {
+            "domain_id": active_enr.domain_id,
+            "domain_name": db.get(Domain, active_enr.domain_id).name,
+        } if active_enr and active_enr.domain_id != domain_id else None,
         "can_enroll": semester_of(user) >= DOMAIN_SELECTION_SEMESTER,
         "points_to_unlock": cfg["points_to_unlock"],
         "student_points": total_points,
@@ -265,8 +252,7 @@ def dashboard(user: User = Depends(student_only), db: Session = Depends(get_db))
     ).all()
     certificates_out = []
     for c in certs:
-        domain = db.get(Domain, c.domain_id) if c.domain_id else None
-        d_name = c.domain_name or (domain.name if domain else "Unknown Domain")
+        d_name = c.domain_name or db.get(Domain, c.domain_id).name
         certificates_out.append({
             "code": c.code, "title": d_name,
             "issued_at": c.issued_at, "first_attempt": c.first_attempt,
@@ -378,30 +364,29 @@ def dashboard(user: User = Depends(student_only), db: Session = Depends(get_db))
         result["skill_gap"] = {"level_name": level.name, "weak": latest.skill_gaps}
 
     if active_level:
-        # Student's active booking in this domain (any level), with its change/cancel window for the dashboard
-        booking = db.scalar(
+        active_booking = db.scalar(
             select(SlotBooking).join(Slot, Slot.id == SlotBooking.slot_id)
-            .where(SlotBooking.user_id == user.id, Slot.domain_id == domain.id, SlotBooking.status == "booked")
+            .where(
+                SlotBooking.user_id == user.id,
+                Slot.domain_id == domain.id,
+                SlotBooking.status == "booked",
+            )
         )
-        if booking:
-            booked_slot = db.get(Slot, booking.slot_id)
-            result["booked_slot_id"] = booking.slot_id
-            result["active_booking"] = _booking_out(booking, booked_slot, db.get(Level, booked_slot.level_id))
-        # Fetch all upcoming slots for this domain (students can book any slot regardless of level)
-        # Use timezone-aware datetime for consistent comparison
-        now = datetime.now(timezone.utc)
+        if active_booking:
+            booked_slot = db.get(Slot, active_booking.slot_id)
+            result["booked_slot_id"] = active_booking.slot_id
+            result["active_booking"] = _booking_out(active_booking, booked_slot, domain, active_level)
+
         slots = db.scalars(
-            select(Slot).where(Slot.domain_id == domain.id)
+            select(Slot).where(Slot.domain_id == domain.id, Slot.starts_at > _now())
             .order_by(Slot.starts_at)
         ).all()
-        # Filter to only future slots, ensuring timezone-aware comparison
         result["slots"] = [
             {
                 "id": s.id, "starts_at": s.starts_at, "venue": s.venue,
                 "seats_left": max(0, s.capacity - _seats_taken(db, s.id)),
             }
             for s in slots
-            if _as_utc(s.starts_at) > now
         ]
     return result
 
@@ -486,33 +471,35 @@ def book_slot(slot_id: int, body: BookSlotIn, user: User = Depends(student_only)
     if slot is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Slot not found")
 
-    level = db.get(Level, slot.level_id)
     domain = db.get(Domain, slot.domain_id)
-
-    # Enrollment + eligibility check
     enr = db.scalar(select(Enrollment).where(
         Enrollment.user_id == user.id, Enrollment.domain_id == slot.domain_id, Enrollment.status == "active",
     ))
     if enr is None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"You are not enrolled in {domain.name}")
+    level = db.scalar(select(Level).where(
+        Level.domain_id == domain.id,
+        Level.number == enr.current_level,
+    ))
+    if level is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Your current level is unavailable.")
 
     starts_at = slot.starts_at if slot.starts_at.tzinfo else slot.starts_at.replace(tzinfo=timezone.utc)
     if starts_at <= _now():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This slot has already started")
 
-    # Block double-booking same domain+level
-    existing_level_booking = db.scalar(
+    existing_booking = db.scalar(
         select(SlotBooking).join(Slot, Slot.id == SlotBooking.slot_id)
         .where(
             SlotBooking.user_id == user.id,
-            Slot.level_id == level.id,
+            Slot.domain_id == domain.id,
             SlotBooking.status == "booked",
         )
     )
-    if existing_level_booking:
+    if existing_booking:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            "You already have a booked examination slot for this test.",
+            "You already have a booked examination slot for this domain.",
         )
 
     if _seats_taken(db, slot.id) >= slot.capacity:
@@ -548,14 +535,14 @@ def book_slot(slot_id: int, body: BookSlotIn, user: User = Depends(student_only)
             acknowledgement_acknowledged_at=now,
         )
         db.add(booking)
-    db.add(ActivityLog(user_id=user.id, action=f"{user.name} booked a slot for {level.name}"))
+    db.add(ActivityLog(user_id=user.id, action=f"{user.name} booked a slot for {domain.name}"))
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, "You already have a booking for this slot.")
     db.refresh(booking)
-    return _booking_out(booking, slot, level)
+    return _booking_out(booking, slot, domain, level)
 
 
 @router.delete("/me/bookings/{booking_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -578,8 +565,8 @@ def cancel_booking(booking_id: int, user: User = Depends(student_only), db: Sess
 
     booking.status = "cancelled"
     slot = db.get(Slot, booking.slot_id)
-    level = db.get(Level, slot.level_id)
-    db.add(ActivityLog(user_id=user.id, action=f"{user.name} cancelled their slot booking for {level.name}"))
+    domain = db.get(Domain, slot.domain_id)
+    db.add(ActivityLog(user_id=user.id, action=f"{user.name} cancelled their slot booking for {domain.name}"))
     db.commit()
 
 
@@ -616,8 +603,8 @@ def change_booking(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "New slot not found")
 
     old_slot = db.get(Slot, old_booking.slot_id)
-    if new_slot.level_id != old_slot.level_id:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "New slot must be for the same level.")
+    if new_slot.domain_id != old_slot.domain_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "New slot must be for the same domain.")
 
     new_starts = new_slot.starts_at if new_slot.starts_at.tzinfo else new_slot.starts_at.replace(tzinfo=timezone.utc)
     if new_starts <= _now():
@@ -632,7 +619,18 @@ def change_booking(
 
     # Execute the change: cancel old, create new (deadline does NOT reset)
     old_booking.status = "cancelled"
-    level = db.get(Level, new_slot.level_id)
+    domain = db.get(Domain, new_slot.domain_id)
+    enrollment = db.scalar(select(Enrollment).where(
+        Enrollment.user_id == user.id,
+        Enrollment.domain_id == domain.id,
+        Enrollment.status == "active",
+    ))
+    level = db.scalar(select(Level).where(
+        Level.domain_id == domain.id,
+        Level.number == enrollment.current_level,
+    )) if enrollment else None
+    if level is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Your current level is unavailable.")
     new_booking = SlotBooking(
         slot_id=new_slot.id,
         user_id=user.id,
@@ -642,14 +640,14 @@ def change_booking(
         acknowledgement_acknowledged_at=old_booking.acknowledgement_acknowledged_at,
     )
     db.add(new_booking)
-    db.add(ActivityLog(user_id=user.id, action=f"{user.name} changed their slot booking for {level.name}"))
+    db.add(ActivityLog(user_id=user.id, action=f"{user.name} changed their slot booking for {domain.name}"))
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, "You already have a booking for the new slot.")
     db.refresh(new_booking)
-    return _booking_out(new_booking, new_slot, level)
+    return _booking_out(new_booking, new_slot, domain, level)
 
 
 @router.get("/me/bookings")
@@ -661,6 +659,15 @@ def my_bookings(user: User = Depends(student_only), db: Session = Depends(get_db
     result = []
     for b in bookings:
         slot = db.get(Slot, b.slot_id)
-        level = db.get(Level, slot.level_id)
-        result.append(_booking_out(b, slot, level))
+        domain = db.get(Domain, slot.domain_id)
+        enrollment = db.scalar(select(Enrollment).where(
+            Enrollment.user_id == user.id,
+            Enrollment.domain_id == domain.id,
+            Enrollment.status == "active",
+        ))
+        level = db.scalar(select(Level).where(
+            Level.domain_id == domain.id,
+            Level.number == enrollment.current_level,
+        )) if enrollment else None
+        result.append(_booking_out(b, slot, domain, level))
     return result

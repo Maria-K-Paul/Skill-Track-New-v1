@@ -40,10 +40,19 @@ def _bank_counts(db: Session, level_ids: list[int]) -> dict[int, dict[str, int]]
 
 
 def _level_out(level: Level, bank: dict[str, int]) -> dict:
+    topics_out = []
+    for t in level.topics:
+        topics_out.append({
+            "id": t.id, "name": t.name, "weightage": t.weightage,
+            "subtopics": [{"id": st.id, "name": st.name, "weightage": st.weightage} for st in t.subtopics]
+        })
     return {
         "id": level.id, "number": level.number, "name": level.name,
         "question_count": level.question_count, "pass_mark": level.pass_mark, "duration_min": level.duration_min,
         "easy_pct": level.easy_pct, "medium_pct": level.medium_pct, "hard_pct": level.hard_pct,
+        "bloom_level_ratio": level.bloom_level_ratio or {"remember": 100},
+        "question_generation_status": level.question_generation_status,
+        "topics": topics_out,
         "bank": bank,
     }
 
@@ -98,6 +107,27 @@ def update_level(level_id: int, body: LevelUpdate, user: User = Depends(content_
     db.commit()
     return _level_out(level, _bank_counts(db, [level.id])[level.id])
 
+from ..models import SyllabusTopic, SyllabusSubtopic
+from ..schemas import SyllabusUpdate
+
+@router.put("/levels/{level_id}/syllabus")
+def update_syllabus(level_id: int, body: SyllabusUpdate, user: User = Depends(content_editors), db: Session = Depends(get_db)):
+    level = _my_level(db, user, level_id)
+    
+    level.bloom_level_ratio = body.bloom_level_ratio
+    
+    new_topics = []
+    for t_in in body.topics:
+        topic = SyllabusTopic(name=t_in.name, weightage=t_in.weightage)
+        new_topics.append(topic)
+        for st_in in t_in.subtopics:
+            topic.subtopics.append(SyllabusSubtopic(name=st_in.name, weightage=st_in.weightage))
+    
+    level.topics = new_topics
+    db.add(ActivityLog(user_id=user.id, action=f"{user.name} updated syllabus for {level.name}"))
+    db.commit()
+    db.refresh(level)
+    return _level_out(level, _bank_counts(db, [level.id])[level.id])
 
 @router.get("/levels/{level_id}/questions")
 def list_questions(level_id: int, user: User = Depends(content_editors), db: Session = Depends(get_db)):
@@ -124,6 +154,23 @@ def add_question(level_id: int, body: QuestionIn, user: User = Depends(content_e
     db.commit()
     return {"id": q.id}
 
+@router.put("/questions/{question_id}")
+def edit_question(question_id: int, body: QuestionIn, user: User = Depends(content_editors), db: Session = Depends(get_db)):
+    q = db.get(Question, question_id)
+    if q is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Question not found")
+    level = _my_level(db, user, q.level_id)
+    
+    q.text = body.text.strip()
+    q.options = [o.strip() for o in body.options]
+    q.answer_index = body.answer_index
+    q.difficulty = body.difficulty
+    q.topic = (body.topic or "").strip() or None
+    
+    db.add(ActivityLog(user_id=user.id, action=f"{user.name} edited a question in {level.name}"))
+    db.commit()
+    return {"id": q.id}
+
 
 @router.delete("/questions/{question_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_question(question_id: int, user: User = Depends(content_editors), db: Session = Depends(get_db)):
@@ -131,23 +178,136 @@ def delete_question(question_id: int, user: User = Depends(content_editors), db:
     if q is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Question not found")
     _my_level(db, user, q.level_id)
-
-    # Check if question is in any active exam session
-    from sqlalchemy import func
-    from ..models import ExamSession
-    active_session_count = db.scalar(
-        select(func.count(ExamSession.id))
-        .where(ExamSession.submitted_at.is_(None))
-        .where(func.json_array_length(ExamSession.question_ids) > 0)
-    )
-    # Note: SQLAlchemy/PostgreSQL JSON array containment would need custom implementation
-    # For safety, we'll just warn if ANY active sessions exist
-    if active_session_count and active_session_count > 0:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            f"Cannot delete question - there are {active_session_count} active exam session(s). "
-            "Please wait for all exams to complete before deleting questions."
-        )
-
     db.delete(q)
     db.commit()
+
+
+@router.delete("/levels/{level_id}/questions", status_code=status.HTTP_204_NO_CONTENT)
+def delete_all_questions(level_id: int, user: User = Depends(content_editors), db: Session = Depends(get_db)):
+    level = _my_level(db, user, level_id)
+    db.execute(select(Question).where(Question.level_id == level.id)) # to verify they exist? not needed.
+    
+    # Actually delete them
+    from sqlalchemy import delete
+    db.execute(delete(Question).where(Question.level_id == level.id))
+    db.add(ActivityLog(user_id=user.id, action=f"{user.name} deleted all questions for {level.name}"))
+    db.commit()
+
+
+from fastapi import BackgroundTasks
+import json
+import logging
+from ..QuestionGen.question_gen import run_pipeline
+from ..database import SessionLocal
+
+log = logging.getLogger(__name__)
+
+def generate_questions_task(domain_id: int, level_ids: list[int]):
+    db = SessionLocal()
+    try:
+        levels = db.scalars(select(Level).where(Level.id.in_(level_ids))).all()
+        for level in levels:
+            try:
+                # Ensure strict typing identical to question_gen.py inputJSON
+                bloom = level.bloom_level_ratio if isinstance(level.bloom_level_ratio, dict) else (
+                    json.loads(level.bloom_level_ratio) if level.bloom_level_ratio else {}
+                )
+                
+                input_data = {
+                    "test": {
+                        "name": str(level.name),
+                        "level": int(level.number),
+                        "duration_minutes": int(level.duration_min),
+                        "total_marks": int(level.question_count) * 2,
+                        "total_questions": int(level.question_count)
+                    },
+                    "syllabus": {
+                        "topics": [
+                            {
+                                "name": str(t.name),
+                                "weightage": int(t.weightage),
+                                "subtopics": [
+                                    {"name": str(st.name), "weightage": int(st.weightage)} 
+                                    for st in t.subtopics
+                                ]
+                            } for t in level.topics
+                        ]
+                    },
+                    "difficulty_ratio": {
+                        "Easy": int(level.easy_pct),
+                        "Medium": int(level.medium_pct),
+                        "Hard": int(level.hard_pct)
+                    },
+                    "bloom_level_ratio": {
+                        "remember": int(bloom.get("remember", 0) or 0),
+                        "understand": int(bloom.get("understand", 0) or 0),
+                        "apply": int(bloom.get("apply", 0) or 0),
+                        "analyze": int(bloom.get("analyze", 0) or 0),
+                        "evaluate": int(bloom.get("evaluate", 0) or 0),
+                        "create": int(bloom.get("create", 0) or 0)
+                    },
+                    "question_distribution": {"MCQ": int(level.question_count)},
+                    "marks_distribution": {"MCQ": 2},
+                    "question_constraints": {
+                        "minimum_options_for_mcq": 4,
+                        "allow_multiple_correct_answers": False,
+                        "negative_marking": False,
+                        "negative_marks": 0,
+                        "allow_partial_marking": False
+                    },
+                    "output_requirements": {
+                        "include_answer_key": True,
+                        "include_explanations": True,
+                        "include_topic_tags": True,
+                        "include_difficulty": True,
+                        "include_marks": True
+                    }
+                }
+                
+                output = run_pipeline(input_data)
+                
+                if output.get("status") == "FAILED":
+                    level.question_generation_status = "failed"
+                else:
+                    # Clear existing questions for this level to avoid duplicates when regenerating
+                    db.execute(Question.__table__.delete().where(Question.level_id == level.id))
+                    
+                    for q in output.get("questions", []):
+                        db_question = Question(
+                            level_id=level.id,
+                            text=q["question"],
+                            options=[opt["text"] for opt in q["options"]],
+                            answer_index=next((i for i, opt in enumerate(q["options"]) if opt["id"] == q["correct_option"]), 0),
+                            difficulty=q["difficulty"].lower(),
+                            topic=q["topic"]
+                        )
+                        db.add(db_question)
+                    level.question_generation_status = "completed"
+                
+                db.commit()
+            except Exception:
+                db.rollback()
+                level.question_generation_status = "failed"
+                db.commit()
+                log.exception("Question generation failed for level %s", level.id)
+    finally:
+        db.close()
+
+@router.post("/levels/{level_id}/generate", status_code=status.HTTP_202_ACCEPTED)
+def trigger_generation(level_id: int, background_tasks: BackgroundTasks, user: User = Depends(content_editors), db: Session = Depends(get_db)):
+    level = _my_level(db, user, level_id)
+    
+    if not level.topics or not level.bloom_level_ratio:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, 
+            f"Test management is incomplete for level '{level.name}'. Please configure syllabus topics and Bloom's ratios."
+        )
+        
+    level.question_generation_status = "generating"
+    db.add(ActivityLog(user_id=user.id, action=f"{user.name} started question generation for {level.name}"))
+    db.commit()
+    
+    # Run the generation in background for this single level
+    background_tasks.add_task(generate_questions_task, level.domain_id, [level.id])
+    
+    return {"message": "Generation started"}

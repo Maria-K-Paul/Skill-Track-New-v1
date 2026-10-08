@@ -10,36 +10,24 @@ from .database import Base, engine
 from .noshow import run_noshow_job
 from .routers import admin, ai, auth, certificates, exam, owner, slots, student
 
-# Create tables first
 Base.metadata.create_all(engine)
-
-# Run migrations on startup
-def _run_migrations() -> None:
-    """Run database migrations on startup."""
-    try:
-        # Import and run the migration script
-        from pathlib import Path
-        migrate_path = Path(__file__).parent.parent / "migrate_db.py"
-        if migrate_path.exists():
-            print("Running database migrations on startup...")
-            import importlib.util
-            spec = importlib.util.spec_from_file_location("migrate_db", migrate_path)
-            if spec is None or spec.loader is None:
-                print("Could not load migration spec, skipping migrations")
-                return
-            migrate_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(migrate_module)
-            migrate_module.run_migration()
-        else:
-            print("Migration script not found, skipping migrations")
-    except Exception as e:
-        print(f"Migration warning: {e}")
-        # Don't fail startup if migrations fail - app might still work
 
 
 def _add_missing_columns() -> None:
-    """Deprecated: Migrations now handled by migrate_db.py"""
-    pass
+    """create_all never alters existing tables, so add columns introduced after the database was made."""
+    if "slot_id" not in {c["name"] for c in inspect(engine).get_columns("exam_keys")}:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE exam_keys ADD COLUMN slot_id INTEGER REFERENCES slots(id)"))
+
+    level_columns = {c["name"] for c in inspect(engine).get_columns("levels")}
+    missing_level_columns = {
+        "bloom_level_ratio": "JSON",
+        "question_generation_status": "VARCHAR(20) NOT NULL DEFAULT 'idle'",
+    }
+    for column, definition in missing_level_columns.items():
+        if column not in level_columns:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE levels ADD COLUMN {column} {definition}"))
 
 
 def _complete_finished_enrollments() -> None:
@@ -55,9 +43,9 @@ def _complete_finished_enrollments() -> None:
                    (SELECT COUNT(*) FROM levels l WHERE l.domain_id = e.domain_id) AS total_levels,
                    (SELECT COUNT(DISTINCT a.level_id)
                     FROM attempts a JOIN levels l ON l.id = a.level_id
-                    WHERE a.user_id = e.user_id AND l.domain_id = e.domain_id AND a.passed = TRUE) AS passed_levels
+                    WHERE a.user_id = e.user_id AND l.domain_id = e.domain_id AND a.passed IS TRUE) AS passed_levels
             FROM enrollments e
-            WHERE e.status = 'active' AND e.is_common_enrollment = FALSE
+            WHERE e.status = 'active' AND e.is_common_enrollment IS FALSE
         """)).fetchall()
 
         now = datetime.now(timezone.utc)
@@ -97,7 +85,7 @@ def _complete_finished_enrollments() -> None:
         db.commit()
 
 
-_run_migrations()
+_add_missing_columns()
 _complete_finished_enrollments()
 
 app = FastAPI(title="SkillTrack API")

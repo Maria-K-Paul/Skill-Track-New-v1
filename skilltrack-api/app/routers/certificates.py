@@ -406,15 +406,10 @@ def verify_certificate(token: str, req: Request, db: Session = Depends(get_db)):
 
     holder = db.get(User, cert.user_id)
     if cert.domain_id:
-        domain = db.get(Domain, cert.domain_id)
-        domain_label = cert.domain_name or (domain.name if domain else None)
+        domain_label = cert.domain_name or (db.get(Domain, cert.domain_id) and db.get(Domain, cert.domain_id).name)
     else:
         level = db.get(Level, cert.level_id)
-        if level:
-            domain = db.get(Domain, level.domain_id)
-            domain_label = domain.name if domain else None
-        else:
-            domain_label = None
+        domain_label = db.get(Domain, level.domain_id).name if level else None
 
     return {
         "valid": True,

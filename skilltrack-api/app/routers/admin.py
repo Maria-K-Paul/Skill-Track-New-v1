@@ -186,7 +186,7 @@ def assign_common(body: AssignCommonIn, db: Session = Depends(get_db), admin: Us
             enrolled_count += 1
 
     # 4. Create the exam slot
-    slot = Slot(domain_id=common.id, level_id=level.id, starts_at=body.starts_at, venue=body.venue.strip(), capacity=body.capacity)
+    slot = Slot(domain_id=common.id, starts_at=body.starts_at, venue=body.venue.strip(), capacity=body.capacity)
     db.add(slot)
 
     db.add(ActivityLog(
