@@ -1,6 +1,9 @@
-# Render Blueprint for Maria's deployment (branch deploy-maria): FastAPI API + static React site.
+# Render Blueprint for the AI skill-gap test deployment (Blueprint SkillTrackAIv1, branch
+# feature/skill-gap-analysis-agent): FastAPI API + static React site. Render added the suffix -wk21 to both
+# addresses, so the three URLs below point at the -wk21 services. Revert this file to the main version before
+# merging this branch into main or deploy-maria-safe, or the live site would be pointed at these services.
 # The database is Neon PostgreSQL in AWS us-east-2 (Ohio), so the API runs in Render's Ohio region next to it.
-# Service names are also the addresses: https://skilltrack-maria-api.onrender.com and https://skilltrack-maria-web.onrender.com
+# Addresses: https://skilltrack-maria-api-wk21.onrender.com and https://skilltrack-maria-web-wk21.onrender.com
 # If Render has to add a suffix to a name, update the three URLs below to match.
 services:
   - type: web
@@ -20,9 +23,9 @@ services:
       - key: SECRET_KEY
         generateValue: true
       - key: CORS_ORIGINS
-        value: https://skilltrack-maria-web.onrender.com
+        value: https://skilltrack-maria-web-wk21.onrender.com
       - key: FRONTEND_URL  # used in the "Verify at" link on certificate PDFs
-        value: https://skilltrack-maria-web.onrender.com
+        value: https://skilltrack-maria-web-wk21.onrender.com
       - key: GEMINI_API_KEY
         sync: false
 
@@ -34,7 +37,7 @@ services:
     staticPublishPath: dist
     envVars:
       - key: VITE_API_URL
-        value: https://skilltrack-maria-api.onrender.com
+        value: https://skilltrack-maria-api-wk21.onrender.com
     routes:
       - type: rewrite
         source: /*
