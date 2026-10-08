@@ -202,9 +202,11 @@ from ..database import SessionLocal
 
 log = logging.getLogger(__name__)
 
-def generate_questions_task(domain_id: int, level_ids: list[int]):
-    db = SessionLocal()
-    try:
+def generate_questions_task(level_ids: list[int]):
+    generation_jobs = []
+    failed_level_ids = []
+
+    with SessionLocal() as db:
         levels = db.scalars(select(Level).where(Level.id.in_(level_ids))).all()
         for level in levels:
             try:
@@ -263,18 +265,37 @@ def generate_questions_task(domain_id: int, level_ids: list[int]):
                         "include_marks": True
                     }
                 }
-                
-                output = run_pipeline(input_data)
-                
+
+                generation_jobs.append((level.id, input_data))
+            except Exception:
+                failed_level_ids.append(level.id)
+                log.exception("Could not prepare question generation for level %s", level.id)
+
+    for level_id in failed_level_ids:
+        with SessionLocal() as db:
+            level = db.get(Level, level_id)
+            if level is not None:
+                level.question_generation_status = "failed"
+                db.commit()
+
+    for level_id, input_data in generation_jobs:
+        try:
+            output = run_pipeline(input_data)
+
+            with SessionLocal() as db:
+                level = db.get(Level, level_id)
+                if level is None:
+                    raise LookupError(f"Level {level_id} no longer exists")
+
                 if output.get("status") == "FAILED":
                     level.question_generation_status = "failed"
                 else:
                     # Clear existing questions for this level to avoid duplicates when regenerating
-                    db.execute(Question.__table__.delete().where(Question.level_id == level.id))
+                    db.execute(Question.__table__.delete().where(Question.level_id == level_id))
                     
                     for q in output.get("questions", []):
                         db_question = Question(
-                            level_id=level.id,
+                            level_id=level_id,
                             text=q["question"],
                             options=[opt["text"] for opt in q["options"]],
                             answer_index=next((i for i, opt in enumerate(q["options"]) if opt["id"] == q["correct_option"]), 0),
@@ -283,15 +304,15 @@ def generate_questions_task(domain_id: int, level_ids: list[int]):
                         )
                         db.add(db_question)
                     level.question_generation_status = "completed"
-                
+
                 db.commit()
-            except Exception:
-                db.rollback()
-                level.question_generation_status = "failed"
-                db.commit()
-                log.exception("Question generation failed for level %s", level.id)
-    finally:
-        db.close()
+        except Exception:
+            log.exception("Question generation failed for level %s", level_id)
+            with SessionLocal() as db:
+                level = db.get(Level, level_id)
+                if level is not None:
+                    level.question_generation_status = "failed"
+                    db.commit()
 
 @router.post("/levels/{level_id}/generate", status_code=status.HTTP_202_ACCEPTED)
 def trigger_generation(level_id: int, background_tasks: BackgroundTasks, user: User = Depends(content_editors), db: Session = Depends(get_db)):
@@ -302,12 +323,16 @@ def trigger_generation(level_id: int, background_tasks: BackgroundTasks, user: U
             status.HTTP_422_UNPROCESSABLE_ENTITY, 
             f"Test management is incomplete for level '{level.name}'. Please configure syllabus topics and Bloom's ratios."
         )
-        
+
     level.question_generation_status = "generating"
     db.add(ActivityLog(user_id=user.id, action=f"{user.name} started question generation for {level.name}"))
     db.commit()
-    
+
+    # Starlette runs background tasks before FastAPI closes yielded dependencies.
+    # Release this request's connection so it is not held during AI generation.
+    db.close()
+
     # Run the generation in background for this single level
-    background_tasks.add_task(generate_questions_task, level.domain_id, [level.id])
+    background_tasks.add_task(generate_questions_task, [level_id])
     
     return {"message": "Generation started"}

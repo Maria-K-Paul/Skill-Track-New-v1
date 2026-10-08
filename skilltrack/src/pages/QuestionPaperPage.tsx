@@ -18,6 +18,7 @@ export default function QuestionPaperPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [generating, setGenerating] = useState(false)
+  const [startingGeneration, setStartingGeneration] = useState(false)
 
   const loadQuestions = useCallback(() => {
     if (!selectedId) return
@@ -78,13 +79,21 @@ export default function QuestionPaperPage() {
 
   async function handleGenerate() {
     if (!selectedId) return
+
+    if (generating && !window.confirm(
+      "This level is still marked as generating. Retrying may start a second generation if the first one is still running. Continue?"
+    )) return
+
+    setStartingGeneration(true)
     setGenerating(true)
     try {
       await api.post(`/owner/levels/${selectedId}/generate`)
-      loadLevels() // this will fetch updated generation status
+      await loadLevels()
     } catch (err) {
       alert(errorMessage(err))
-      setGenerating(false)
+      await loadLevels()
+    } finally {
+      setStartingGeneration(false)
     }
   }
 
@@ -242,10 +251,10 @@ export default function QuestionPaperPage() {
             <p>No questions generated for this level yet.</p>
             <button 
               onClick={handleGenerate}
-              disabled={generating}
+              disabled={startingGeneration}
               className="inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition-all hover:bg-indigo-500 disabled:opacity-75 disabled:cursor-not-allowed"
             >
-              {generating ? "Generating..." : "Generate Questions"}
+              {startingGeneration ? "Starting..." : generating ? "Retry Generation" : "Generate Questions"}
             </button>
           </div>
         ) : (
@@ -255,10 +264,10 @@ export default function QuestionPaperPage() {
               <div className="flex items-center gap-2">
                 <button 
                   onClick={handleGenerate}
-                  disabled={generating}
+                  disabled={startingGeneration}
                   className="text-xs font-semibold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-lg transition disabled:opacity-75 disabled:cursor-not-allowed"
                 >
-                  {generating ? "Generating..." : "Regenerate Questions"}
+                  {startingGeneration ? "Starting..." : generating ? "Retry Generation" : "Regenerate Questions"}
                 </button>
                 <button 
                   onClick={deleteAllQuestions} 
