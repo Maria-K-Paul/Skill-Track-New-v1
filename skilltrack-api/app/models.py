@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, false
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -216,4 +216,21 @@ class AiCache(Base):
     kind: Mapped[str] = mapped_column(String(30))
     cache_key: Mapped[str] = mapped_column(String(80))
     payload: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SkillGapAnalysis(Base):
+    __tablename__ = "skill_gap_analysis"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    assessment_id: Mapped[int | None] = mapped_column(ForeignKey("attempts.id"))
+    overall_summary: Mapped[str] = mapped_column(Text)
+    readiness: Mapped[str] = mapped_column(String(20), default="DEVELOPING")
+    strengths: Mapped[list[str]] = mapped_column(JSON, default=list)
+    gaps: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    next_level_priorities: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    recommended_plan: Mapped[list[str]] = mapped_column(JSON, default=list)
+    priority_topics: Mapped[list[str]] = mapped_column(JSON, default=list)
+    confidence: Mapped[str] = mapped_column(String(30), default="LOW")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
