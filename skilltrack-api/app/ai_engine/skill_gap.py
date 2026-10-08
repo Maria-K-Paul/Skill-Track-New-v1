@@ -218,6 +218,7 @@ def run_skill_gap_agent(student_id: int, assessment_id: int | None = None, db: S
         f"Deterministic analysis: {json.dumps({'gaps': gap_entries, 'strengths': strengths, 'recommendations': recommendations}, default=str)}\n\n"
         "Interpret the evidence and produce a concise, actionable skill-gap summary. "
         "Do not merely repeat low scores. Distinguish current weaknesses, persistent weaknesses, improving skills, declining skills, and next-level risk. "
+        "Set readiness to exactly one of READY, DEVELOPING, or NOT_READY. Explain the readiness rationale and relevant gaps in overall_summary; readiness itself must not contain a sentence. "
         "Return valid structured JSON matching the supplied schema."
     )
 

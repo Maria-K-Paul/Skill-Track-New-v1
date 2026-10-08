@@ -12,6 +12,7 @@ import Register from './pages/Register'
 import Verify from './pages/Verify'
 import StudentDashboard from './pages/StudentDashboard'
 import CredentialsPage from './pages/CredentialsPage'
+import SkillAnalysisPage from './pages/SkillAnalysisPage'
 
 function RequireRole({ roles }: { roles: Role[] }) {
   const { user, loading } = useAuth()
@@ -42,6 +43,9 @@ export default function App() {
         </Route>
         <Route element={<RequireRole roles={['student']} />}>
           <Route path="/student/credentials" element={<CredentialsPage />} />
+        </Route>
+        <Route element={<RequireRole roles={['student']} />}>
+          <Route path="/student/skill-analysis" element={<SkillAnalysisPage />} />
         </Route>
         <Route element={<RequireRole roles={['student']} />}>
           <Route path="/exam" element={<ExamDashboard />} />

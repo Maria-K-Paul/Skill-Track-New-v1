@@ -1220,60 +1220,54 @@ export default function StudentDashboard() {
       <Card title="AI skill gap analysis" icon={ico('chart')}>
         <AiStatus state={skillGapReport} />
         {skillGapReport.data ? (
-          <div className="space-y-4 text-sm text-slate-600">
-            <div className="rounded-xl bg-indigo-50 px-3 py-2">
-              <div className="text-xs uppercase tracking-[0.18em] text-indigo-500">Overall readiness</div>
-              <div className="mt-1 text-lg font-semibold text-slate-900">{skillGapReport.data.readiness}</div>
-              <p className="mt-1 text-slate-600">{skillGapReport.data.overall_summary}</p>
+          <div className="space-y-4">
+            <div className="rounded-xl bg-gradient-to-br from-indigo-50 to-purple-50 p-4">
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-indigo-600">Overall Readiness</div>
+              <div className="text-2xl font-bold text-slate-900">{skillGapReport.data.readiness}</div>
+              <p className="mt-2 text-sm text-slate-600">{skillGapReport.data.overall_summary}</p>
             </div>
 
-            <div>
-              <p className="mb-2 text-sm font-semibold text-slate-800">Strengths</p>
-              <ul className="list-disc space-y-1 pl-5 marker:text-indigo-500">
-                {skillGapReport.data.strengths.map((s) => <li key={s}>{s}</li>)}
-              </ul>
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="rounded-xl border border-green-200 bg-green-50 p-3">
+                <div className="text-xs font-semibold uppercase tracking-wider text-green-600">Strengths</div>
+                <div className="mt-1 text-2xl font-bold text-slate-900">{skillGapReport.data.strengths.length}</div>
+              </div>
+              <div className="rounded-xl border border-red-200 bg-red-50 p-3">
+                <div className="text-xs font-semibold uppercase tracking-wider text-red-600">Skill Gaps</div>
+                <div className="mt-1 text-2xl font-bold text-slate-900">
+                  {skillGapReport.data.gaps.filter(g => g.severity === 'HIGH' || g.severity === 'MEDIUM').length}
+                </div>
+              </div>
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                <div className="text-xs font-semibold uppercase tracking-wider text-amber-600">Confidence</div>
+                <div className="mt-1 text-2xl font-bold text-slate-900">{skillGapReport.data.confidence}</div>
+              </div>
             </div>
 
-            <div>
-              <p className="mb-2 text-sm font-semibold text-slate-800">Priority gaps</p>
-              <ul className="space-y-3">
-                {skillGapReport.data.gaps.slice(0, 3).map((g) => (
-                  <li key={g.topic} className="rounded-xl bg-slate-50 p-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="font-semibold text-slate-800">{g.topic}</span>
-                      <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-red-700">{g.severity}</span>
-                    </div>
-                    <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
-                      <span>Score: {g.score}%</span>
-                      <span>Trend: {g.trend}</span>
-                    </div>
-                    <p className="mt-2 text-xs text-slate-600">{g.reason}</p>
-                  </li>
-                ))}
-              </ul>
-            </div>
+            {skillGapReport.data.gaps.length > 0 && (
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="mb-2 text-xs font-semibold text-slate-700">Top Priority Gap</div>
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-slate-900">{skillGapReport.data.gaps[0].topic}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                    skillGapReport.data.gaps[0].severity === 'HIGH' ? 'bg-red-100 text-red-700' :
+                    skillGapReport.data.gaps[0].severity === 'MEDIUM' ? 'bg-amber-100 text-amber-700' :
+                    'bg-green-100 text-green-700'
+                  }`}>
+                    {skillGapReport.data.gaps[0].severity}
+                  </span>
+                </div>
+                <p className="mt-2 text-xs text-slate-600">{skillGapReport.data.gaps[0].score}% · {skillGapReport.data.gaps[0].trend}</p>
+              </div>
+            )}
 
-            <div>
-              <p className="mb-2 text-sm font-semibold text-slate-800">Next-level preparation</p>
-              <ul className="space-y-3">
-                {skillGapReport.data.next_level_priorities.map((item) => (
-                  <li key={item.topic} className="rounded-xl bg-amber-50 p-3">
-                    <div className="font-semibold text-slate-800">{item.topic}</div>
-                    <p className="mt-1 text-xs text-slate-600">{item.reason}</p>
-                    <ul className="mt-2 list-disc space-y-1 pl-5 text-xs marker:text-amber-700">
-                      {item.actions.map((a) => <li key={a}>{a}</li>)}
-                    </ul>
-                  </li>
-                ))}
-              </ul>
-            </div>
-
-            <div>
-              <p className="mb-2 text-sm font-semibold text-slate-800">Study plan</p>
-              <ol className="list-decimal space-y-1 pl-5 marker:font-semibold marker:text-indigo-500">
-                {skillGapReport.data.recommended_plan.map((step) => <li key={step}>{step}</li>)}
-              </ol>
-            </div>
+            <Link
+              to="/student/skill-analysis"
+              className="group flex items-center justify-center gap-2 rounded-xl border-2 border-indigo-600 bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-lg transition-all hover:-translate-y-0.5 hover:bg-indigo-700 hover:shadow-xl"
+            >
+              <span>View Full AI Analysis</span>
+              {ico('arrow', 'h-4 w-4 transition-transform group-hover:translate-x-1')}
+            </Link>
           </div>
         ) : !hasCompletedAssessment && !skillGapReport.loading && !skillGapReport.error ? (
           <p className="rounded-xl bg-slate-50 px-3 py-2 text-sm text-slate-500">Your skill-gap analysis appears after your first assessment.</p>

@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, false
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -225,8 +225,8 @@ class SkillGapAnalysis(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     assessment_id: Mapped[int | None] = mapped_column(ForeignKey("attempts.id"))
-    overall_summary: Mapped[str] = mapped_column(String(2000))
-    readiness: Mapped[str] = mapped_column(String(100), default="developing")
+    overall_summary: Mapped[str] = mapped_column(Text)
+    readiness: Mapped[str] = mapped_column(String(20), default="DEVELOPING")
     strengths: Mapped[list[str]] = mapped_column(JSON, default=list)
     gaps: Mapped[list[dict]] = mapped_column(JSON, default=list)
     next_level_priorities: Mapped[list[dict]] = mapped_column(JSON, default=list)

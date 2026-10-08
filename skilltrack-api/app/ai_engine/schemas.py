@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -21,7 +23,7 @@ class PreparationRecommendation(BaseModel):
 
 class SkillGapReport(BaseModel):
     overall_summary: str
-    readiness: str
+    readiness: Literal["READY", "DEVELOPING", "NOT_READY"]
     strengths: list[str] = Field(default_factory=list)
     gaps: list[SkillGap] = Field(default_factory=list)
     next_level_priorities: list[PreparationRecommendation] = Field(default_factory=list)
