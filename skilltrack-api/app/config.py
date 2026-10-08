@@ -32,10 +32,11 @@ ACCESS_TOKEN_MINUTES = int(os.environ.get("ACCESS_TOKEN_MINUTES", "15"))
 REFRESH_TOKEN_MINUTES = int(os.environ.get("REFRESH_TOKEN_MINUTES", "1440"))
 ALGORITHM = "HS256"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "").strip() or "gemini-1.5-flash"
+# Defaults are free-tier models; when Google retires one, pick a current one from ai.google.dev/gemini-api/docs/models
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "").strip() or "gemini-3.8-flash"
 # Tried in order when the main model is overloaded (503) or rate-limited (429). Comma-separated; empty disables.
 GEMINI_FALLBACK_MODELS = [
-    m.strip() for m in os.environ.get("GEMINI_FALLBACK_MODELS", "gemini-1.5-pro,gemini-1.5-flash-8b").split(",") if m.strip()
+    m.strip() for m in os.environ.get("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash-lite,gemini-3.7-flash").split(",") if m.strip()
 ]
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173").rstrip("/")
 # Public base URL used in QR codes (can differ from FRONTEND_URL behind a reverse proxy)
