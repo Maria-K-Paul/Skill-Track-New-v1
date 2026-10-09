@@ -4,7 +4,11 @@ import type { InternalAxiosRequestConfig } from 'axios'
 export const TOKEN_KEY = 'skilltrack_token'
 export const REFRESH_KEY = 'skilltrack_refresh_token'
 
-export const api = axios.create({ baseURL: import.meta.env.VITE_API_URL ?? 'http://localhost:8000' })
+// The live site only allows calls to its own address (Content-Security-Policy connect-src 'self'), and Render
+// forwards /api/* to the API, so production builds always go through /api
+export const api = axios.create({
+  baseURL: import.meta.env.PROD ? '/api' : (import.meta.env.VITE_API_URL ?? 'http://localhost:8000'),
+})
 
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem(TOKEN_KEY)
