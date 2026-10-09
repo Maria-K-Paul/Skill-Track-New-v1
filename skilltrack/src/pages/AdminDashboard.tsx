@@ -280,7 +280,8 @@ function ManageQuestions() {
   const [error, setError] = useState('')
 
   useEffect(() => {
-    api.get<CatalogDomain[]>('/manage/slots/catalog')
+    // Every domain with its levels, Common Assessments included. The slot catalog no longer lists levels.
+    api.get<CatalogDomain[]>('/exam/catalog')
       .then((res) => {
         setCatalog(res.data)
         setDomainId(res.data[0]?.id ?? null)

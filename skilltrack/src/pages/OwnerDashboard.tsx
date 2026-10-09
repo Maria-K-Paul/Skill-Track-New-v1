@@ -3,9 +3,11 @@ import type { ReactNode } from 'react'
 import { api, errorMessage } from '../api'
 import Card from '../components/Card'
 import { Icon } from '../components/AuthLayout'
+import QuestionBank from '../components/QuestionBank'
 import SlotManager from '../components/SlotManager'
 
 type Difficulty = 'easy' | 'medium' | 'hard'
+const DIFFICULTIES: Difficulty[] = ['easy', 'medium', 'hard']
 
 interface LevelData {
   id: number
@@ -17,21 +19,6 @@ interface LevelData {
   easy_pct: number
   medium_pct: number
   hard_pct: number
-  bloom_level_ratio: {
-    remember: number
-    understand: number
-    apply: number
-    analyze: number
-    evaluate: number
-    create: number
-  }
-  question_generation_status: string
-  topics: {
-    id?: number
-    name: string
-    weightage: number
-    subtopics: { id?: number; name: string; weightage: number }[]
-  }[]
   bank: Record<Difficulty, number>
 }
 
@@ -58,6 +45,12 @@ const STATUS_STYLE: Record<StudentRow['status'], string> = {
   'At risk': 'bg-amber-100 text-amber-700',
   Removed: 'bg-red-100 text-red-700',
   Completed: 'bg-indigo-100 text-indigo-700',
+}
+
+const DIFF_STYLE: Record<Difficulty, { bar: string; accent: string; chip: string }> = {
+  easy: { bar: 'bg-emerald-400', accent: 'accent-emerald-500', chip: 'bg-emerald-50 text-emerald-700' },
+  medium: { bar: 'bg-amber-400', accent: 'accent-amber-500', chip: 'bg-amber-50 text-amber-700' },
+  hard: { bar: 'bg-rose-400', accent: 'accent-rose-500', chip: 'bg-rose-50 text-rose-700' },
 }
 
 const PATHS = {
@@ -93,11 +86,76 @@ function StatTile({ label, value, icon }: { label: string; value: ReactNode; ico
   )
 }
 
+function AllotCard({ level, onSaved }: { level: LevelData; onSaved: () => Promise<void> }) {
+  const [mix, setMix] = useState<Record<Difficulty, number>>({
+    easy: level.easy_pct, medium: level.medium_pct, hard: level.hard_pct,
+  })
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
 
+  const total = mix.easy + mix.medium + mix.hard
+  const counts = Object.fromEntries(
+    DIFFICULTIES.map((d) => [d, Math.round((level.question_count * mix[d]) / 100)]),
+  ) as Record<Difficulty, number>
+  const short = DIFFICULTIES.filter((d) => counts[d] > level.bank[d])
+
+  async function save() {
+    try {
+      await api.patch(`/owner/levels/${level.id}`, { easy_pct: mix.easy, medium_pct: mix.medium, hard_pct: mix.hard })
+      await onSaved()
+      setMessage({ ok: true, text: `Saved for ${level.name}` })
+    } catch (err) {
+      setMessage({ ok: false, text: errorMessage(err) })
+    }
+  }
+
+  return (
+    <>
+      <p className="mt-5 text-sm font-semibold">Difficulty distribution <span className="font-normal text-slate-500">({level.question_count} questions per test)</span></p>
+
+      {/* live preview of the mix */}
+      <div className="mt-3 flex h-3 overflow-hidden rounded-full bg-slate-100">
+        {DIFFICULTIES.map((d) => <div key={d} className={`${DIFF_STYLE[d].bar} transition-all duration-300`} style={{ width: `${Math.min(mix[d], 100)}%` }} />)}
+      </div>
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+        {DIFFICULTIES.map((d) => (
+          <div key={d} className="rounded-2xl border border-slate-100 p-4 text-sm shadow-sm">
+            <div className="flex items-center justify-between">
+              <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${DIFF_STYLE[d].chip}`}>{d}</span>
+              <span className="text-lg font-bold">{mix[d]}%</span>
+            </div>
+            <input
+              type="range" min={0} max={100} step={5} value={mix[d]}
+              onChange={(e) => { setMix({ ...mix, [d]: Number(e.target.value) }); setMessage(null) }}
+              className={`mt-3 w-full ${DIFF_STYLE[d].accent}`}
+            />
+            <div className={`mt-1 text-xs ${counts[d] > level.bank[d] ? 'font-medium text-amber-600' : 'text-slate-500'}`}>
+              {counts[d]} wanted · {level.bank[d]} in question bank
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <p className={`mt-4 text-sm font-semibold ${total === 100 ? 'text-emerald-600' : 'text-red-600'}`}>
+        Total: {total}% {total !== 100 && '(must equal 100%)'}
+      </p>
+      {short.length > 0 && (
+        <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          Not enough {short.join(', ')} questions in the bank. Other difficulties will fill the gap until you add more.
+        </p>
+      )}
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <button disabled={total !== 100} onClick={save} className={primaryBtn}>Save allotment</button>
+        {message && <span className={`text-sm font-medium ${message.ok ? 'text-emerald-600' : 'text-red-600'}`}>{message.text}</span>}
+      </div>
+    </>
+  )
+}
 
 export default function OwnerDashboard() {
   const [data, setData] = useState<Overview | null>(null)
   const [loadError, setLoadError] = useState('')
+  const [selectedId, setSelectedId] = useState<number | null>(null)
   const [edits, setEdits] = useState<Record<number, Partial<Pick<LevelData, 'question_count' | 'pass_mark' | 'duration_min'>>>>({})
   const [levelError, setLevelError] = useState('')
 
@@ -105,6 +163,7 @@ export default function OwnerDashboard() {
     try {
       const res = await api.get<Overview>('/owner/overview')
       setData(res.data)
+      setSelectedId((id) => id ?? res.data.levels[0]?.id ?? null)
       setLoadError('')
     } catch (err) {
       setLoadError(errorMessage(err, 'Could not load your domain'))
@@ -123,6 +182,7 @@ export default function OwnerDashboard() {
     )
   }
 
+  const level = data.levels.find((l) => l.id === selectedId) ?? data.levels[0]
   const count = (s: StudentRow['status']) => data.students.filter((x) => x.status === s).length
 
   async function saveLevel(id: number) {
@@ -222,6 +282,18 @@ export default function OwnerDashboard() {
         <SlotManager />
       </Card>
 
+      {level && (
+        <Card title="Allot questions · upcoming test" icon={ico('sliders')}>
+          <label className="block text-sm">
+            <span className="font-semibold text-slate-700">Level</span>
+            <select value={level.id} onChange={(e) => setSelectedId(Number(e.target.value))} className={`${inputClass} mt-1.5 block w-full max-w-xs`}>
+              {data.levels.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+            </select>
+          </label>
+          <AllotCard key={`${level.id}-${level.easy_pct}-${level.medium_pct}-${level.hard_pct}`} level={level} onSaved={load} />
+          <QuestionBank key={level.id} levelId={level.id} levelName={level.name} onChanged={load} />
+        </Card>
+      )}
     </div>
   )
 }

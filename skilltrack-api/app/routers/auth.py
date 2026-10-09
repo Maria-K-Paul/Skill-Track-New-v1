@@ -1,4 +1,7 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from jwt import InvalidTokenError
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
@@ -7,14 +10,18 @@ from ..deps import get_current_user, require_roles
 from ..models import ActivityLog, User
 from ..ratelimit import login_failures
 from ..rules import ensure_common_enrollment
-from ..schemas import LoginIn, RegisterIn, TokenOut, UserOut
-from ..security import create_access_token, hash_password, verify_password
+from ..schemas import AccessTokenOut, LoginIn, RefreshIn, RegisterIn, TokenOut, UserOut
+from ..security import create_access_token, create_refresh_token, decode_token, hash_password, verify_password
 
 router = APIRouter(tags=["auth"])
 
 
 def _token_for(user: User) -> TokenOut:
-    return TokenOut(access_token=create_access_token(user.id, user.role), user=UserOut.model_validate(user))
+    return TokenOut(
+        access_token=create_access_token(user.id, user.role),
+        refresh_token=create_refresh_token(user.id),
+        user=UserOut.model_validate(user),
+    )
 
 
 @router.post("/auth/register", response_model=TokenOut, status_code=status.HTTP_201_CREATED)
@@ -40,12 +47,28 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
 def login(body: LoginIn, db: Session = Depends(get_db)):
     email_key = body.email.lower()
     login_failures.raise_if_blocked(email_key)
-    print(f"Login attempt: '{body.email}' with pass '{body.password}'")
     user = db.scalar(select(User).where(User.email == body.email))
     if user is None or not user.is_active or not verify_password(body.password, user.password_hash):
         login_failures.hit(email_key)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid email or password")
     return _token_for(user)
+
+
+@router.post("/auth/refresh", response_model=AccessTokenOut)
+def refresh(body: RefreshIn, db: Session = Depends(get_db)):
+    """Swap a refresh token for a new access token. The refresh token is not renewed,
+    so the user signs in again once it expires."""
+    expired = HTTPException(status.HTTP_401_UNAUTHORIZED, "Your session has expired. Please sign in again.")
+    try:
+        payload = decode_token(body.refresh_token, "refresh")
+        user = db.get(User, int(payload["sub"]))
+    except (InvalidTokenError, KeyError, ValueError):
+        raise expired
+    if user is None or not user.is_active:
+        raise expired
+    # The role is read from the database, so a role change applies from the next access token
+    ends_at = datetime.fromtimestamp(payload["exp"], timezone.utc)
+    return AccessTokenOut(access_token=create_access_token(user.id, user.role, not_after=ends_at))
 
 
 @router.get("/auth/me", response_model=UserOut)

@@ -18,7 +18,7 @@ def get_current_user(
     if creds is None:
         raise unauthorized
     try:
-        payload = decode_token(creds.credentials)
+        payload = decode_token(creds.credentials, "access")
         user = db.get(User, int(payload["sub"]))
     except (InvalidTokenError, KeyError, ValueError):
         raise unauthorized

@@ -32,7 +32,7 @@ class Domain(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100), unique=True)
-    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     # The Semester 1-2 common assessments live in a special domain that students never pick themselves
     is_common: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     description: Mapped[str | None] = mapped_column(String(500))
@@ -45,7 +45,7 @@ class Level(Base):
     __table_args__ = (UniqueConstraint("domain_id", "number"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    domain_id: Mapped[int] = mapped_column(ForeignKey("domains.id"))
+    domain_id: Mapped[int] = mapped_column(ForeignKey("domains.id", ondelete="RESTRICT"))
     number: Mapped[int] = mapped_column(Integer)
     name: Mapped[str] = mapped_column(String(100))
     question_count: Mapped[int] = mapped_column(Integer, default=20)
@@ -54,43 +54,14 @@ class Level(Base):
     easy_pct: Mapped[int] = mapped_column(Integer, default=30)
     medium_pct: Mapped[int] = mapped_column(Integer, default=50)
     hard_pct: Mapped[int] = mapped_column(Integer, default=20)
-    
-    # New fields for Question Gen Agent
-    bloom_level_ratio: Mapped[dict | None] = mapped_column(JSON)
-    question_generation_status: Mapped[str] = mapped_column(String(20), default="idle")
-    
     domain: Mapped[Domain] = relationship(back_populates="levels")
-    topics: Mapped[list["SyllabusTopic"]] = relationship(back_populates="level", cascade="all, delete-orphan", order_by="SyllabusTopic.id")
-
-
-class SyllabusTopic(Base):
-    __tablename__ = "syllabus_topics"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    level_id: Mapped[int] = mapped_column(ForeignKey("levels.id"))
-    name: Mapped[str] = mapped_column(String(120))
-    weightage: Mapped[int] = mapped_column(Integer)
-    
-    level: Mapped["Level"] = relationship(back_populates="topics")
-    subtopics: Mapped[list["SyllabusSubtopic"]] = relationship(back_populates="topic", cascade="all, delete-orphan", order_by="SyllabusSubtopic.id")
-
-
-class SyllabusSubtopic(Base):
-    __tablename__ = "syllabus_subtopics"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    topic_id: Mapped[int] = mapped_column(ForeignKey("syllabus_topics.id"))
-    name: Mapped[str] = mapped_column(String(120))
-    weightage: Mapped[int] = mapped_column(Integer)
-    
-    topic: Mapped["SyllabusTopic"] = relationship(back_populates="subtopics")
 
 
 class Question(Base):
     __tablename__ = "questions"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    level_id: Mapped[int] = mapped_column(ForeignKey("levels.id"))
+    level_id: Mapped[int] = mapped_column(ForeignKey("levels.id", ondelete="CASCADE"))
     text: Mapped[str] = mapped_column(String(1000))
     options: Mapped[list] = mapped_column(JSON)
     answer_index: Mapped[int] = mapped_column(Integer)
@@ -108,8 +79,8 @@ class Enrollment(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    domain_id: Mapped[int] = mapped_column(ForeignKey("domains.id"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    domain_id: Mapped[int] = mapped_column(ForeignKey("domains.id", ondelete="RESTRICT"))
     status: Mapped[str] = mapped_column(String(20), default="active")  # active | completed | removed
     current_level: Mapped[int] = mapped_column(Integer, default=1)
     points: Mapped[int] = mapped_column(Integer, default=0)
@@ -122,10 +93,11 @@ class Enrollment(Base):
 
 class Slot(Base):
     __tablename__ = "slots"
-    __table_args__ = (UniqueConstraint("domain_id", "starts_at", "venue"),)
+    __table_args__ = (UniqueConstraint("level_id", "starts_at", "venue"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    domain_id: Mapped[int] = mapped_column(ForeignKey("domains.id"))
+    domain_id: Mapped[int] = mapped_column(ForeignKey("domains.id", ondelete="RESTRICT"))
+    level_id: Mapped[int] = mapped_column(ForeignKey("levels.id", ondelete="RESTRICT"))
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     venue: Mapped[str] = mapped_column(String(120))
     capacity: Mapped[int] = mapped_column(Integer)
@@ -136,8 +108,8 @@ class SlotBooking(Base):
     __table_args__ = (UniqueConstraint("slot_id", "user_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    slot_id: Mapped[int] = mapped_column(ForeignKey("slots.id"))
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    slot_id: Mapped[int] = mapped_column(ForeignKey("slots.id", ondelete="CASCADE"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     status: Mapped[str] = mapped_column(String(20), default="booked")  # booked | cancelled | missed
     booked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow)
     change_cancel_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -148,8 +120,8 @@ class Attempt(Base):
     __tablename__ = "attempts"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    level_id: Mapped[int] = mapped_column(ForeignKey("levels.id"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    level_id: Mapped[int] = mapped_column(ForeignKey("levels.id", ondelete="RESTRICT"))
     attempt_no: Mapped[int] = mapped_column(Integer)
     score: Mapped[int] = mapped_column(Integer)
     passed: Mapped[bool] = mapped_column(Boolean)
@@ -163,9 +135,9 @@ class Certificate(Base):
     __table_args__ = (UniqueConstraint("user_id", "domain_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    domain_id: Mapped[int | None] = mapped_column(ForeignKey("domains.id"))
-    level_id: Mapped[int] = mapped_column(ForeignKey("levels.id"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    domain_id: Mapped[int | None] = mapped_column(ForeignKey("domains.id", ondelete="SET NULL"))
+    level_id: Mapped[int] = mapped_column(ForeignKey("levels.id", ondelete="RESTRICT"))
     code: Mapped[str] = mapped_column(String(40), unique=True)
     first_attempt: Mapped[bool] = mapped_column(Boolean, default=False)
     issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -183,9 +155,9 @@ class Badge(Base):
     __table_args__ = (UniqueConstraint("user_id", "level_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    domain_id: Mapped[int] = mapped_column(ForeignKey("domains.id"))
-    level_id: Mapped[int] = mapped_column(ForeignKey("levels.id"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    domain_id: Mapped[int] = mapped_column(ForeignKey("domains.id", ondelete="RESTRICT"))
+    level_id: Mapped[int] = mapped_column(ForeignKey("levels.id", ondelete="RESTRICT"))
     awarded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -193,7 +165,7 @@ class ActivityLog(Base):
     __tablename__ = "activity_logs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     action: Mapped[str] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -203,12 +175,12 @@ class ExamKey(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     code: Mapped[str] = mapped_column(String(20), unique=True, index=True)
-    domain_id: Mapped[int] = mapped_column(ForeignKey("domains.id"))
+    domain_id: Mapped[int] = mapped_column(ForeignKey("domains.id", ondelete="RESTRICT"))
     # level_id is optional - used only for keys generated without a slot (by specific level)
-    level_id: Mapped[int | None] = mapped_column(ForeignKey("levels.id"))
-    issued_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    level_id: Mapped[int | None] = mapped_column(ForeignKey("levels.id", ondelete="SET NULL"))
+    issued_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     # When set, only students who booked this slot can use the key
-    slot_id: Mapped[int | None] = mapped_column(ForeignKey("slots.id"))
+    slot_id: Mapped[int | None] = mapped_column(ForeignKey("slots.id", ondelete="SET NULL"))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -217,9 +189,9 @@ class ExamSession(Base):
     __tablename__ = "exam_sessions"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    level_id: Mapped[int] = mapped_column(ForeignKey("levels.id"))
-    key_id: Mapped[int] = mapped_column(ForeignKey("exam_keys.id"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    level_id: Mapped[int] = mapped_column(ForeignKey("levels.id", ondelete="RESTRICT"))
+    key_id: Mapped[int] = mapped_column(ForeignKey("exam_keys.id", ondelete="RESTRICT"))
     question_ids: Mapped[list] = mapped_column(JSON)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -240,7 +212,7 @@ class AiCache(Base):
     __table_args__ = (UniqueConstraint("user_id", "kind", "cache_key"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     kind: Mapped[str] = mapped_column(String(30))
     cache_key: Mapped[str] = mapped_column(String(80))
     payload: Mapped[dict] = mapped_column(JSON)

@@ -7,7 +7,7 @@ def run():
     c = conn.cursor()
 
     # Check duplicates for Slots
-    c.execute('SELECT domain_id, starts_at, venue, COUNT(*) FROM slots GROUP BY domain_id, starts_at, venue HAVING COUNT(*) > 1')
+    c.execute('SELECT level_id, starts_at, venue, COUNT(*) FROM slots GROUP BY level_id, starts_at, venue HAVING COUNT(*) > 1')
     dups = c.fetchall()
     if dups:
         print("Duplicate slots found:", dups)
@@ -16,7 +16,7 @@ def run():
 
     try:
         # Slot unique index (original migration)
-        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_slots_domain_time_venue ON slots (domain_id, starts_at, venue);")
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_slots_level_time_venue ON slots (level_id, starts_at, venue);")
 
         # certificates.domain_id (original migration)
         try:
@@ -127,35 +127,6 @@ def run():
             except sqlite3.OperationalError as e:
                 if "duplicate column name" not in str(e):
                     raise
-
-        # ── Question Generation Syllabus & Bloom fields ──────────────────────
-        for col, defn in [
-            ("bloom_level_ratio", "JSON"),
-            ("question_generation_status", "TEXT NOT NULL DEFAULT 'idle'"),
-        ]:
-            try:
-                c.execute(f"ALTER TABLE levels ADD COLUMN {col} {defn}")
-            except sqlite3.OperationalError as e:
-                if "duplicate column name" not in str(e):
-                    raise
-
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS syllabus_topics (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                level_id  INTEGER NOT NULL REFERENCES levels(id),
-                name      TEXT NOT NULL,
-                weightage INTEGER NOT NULL
-            )
-        """)
-
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS syllabus_subtopics (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                topic_id  INTEGER NOT NULL REFERENCES syllabus_topics(id),
-                name      TEXT NOT NULL,
-                weightage INTEGER NOT NULL
-            )
-        """)
 
         conn.commit()
         print("Migration successful.")
