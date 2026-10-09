@@ -32,18 +32,8 @@ class UserOut(BaseModel):
 
 class TokenOut(BaseModel):
     access_token: str
-    refresh_token: str
     token_type: str = "bearer"
     user: UserOut
-
-
-class RefreshIn(BaseModel):
-    refresh_token: str
-
-
-class AccessTokenOut(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
 
 
 class EnrollIn(BaseModel):
@@ -79,6 +69,19 @@ class LevelUpdate(BaseModel):
     medium_pct: int | None = Field(default=None, ge=0, le=100)
     hard_pct: int | None = Field(default=None, ge=0, le=100)
 
+
+class SyllabusSubtopicIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    weightage: int = Field(ge=1, le=100)
+
+class SyllabusTopicIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    weightage: int = Field(ge=1, le=100)
+    subtopics: list[SyllabusSubtopicIn]
+
+class SyllabusUpdate(BaseModel):
+    bloom_level_ratio: dict[str, int]
+    topics: list[SyllabusTopicIn]
 
 class QuestionIn(BaseModel):
     text: str = Field(min_length=5, max_length=1000)
@@ -131,7 +134,6 @@ class SettingsIn(BaseModel):
 
 class SlotIn(BaseModel):
     domain_id: int
-    level_id: int | None = None  # Optional: defaults to first level of domain if not provided
     starts_at: AwareDatetime
     venue: str = Field(min_length=2, max_length=120)
     capacity: int = Field(ge=1, le=500)

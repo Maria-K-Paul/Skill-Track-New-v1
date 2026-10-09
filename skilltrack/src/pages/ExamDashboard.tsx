@@ -14,8 +14,6 @@ interface Session {
   session_id: number
   level: { id: number; name: string; pass_mark: number }
   seconds_left: number
-  server_time: string
-  ends_at: string
   questions: { id: number; text: string; options: string[] }[]
 }
 
@@ -145,7 +143,7 @@ export default function ExamDashboard() {
   const [now, setNow] = useState(() => Date.now())
   const [mySlot, setMySlot] = useState<MySlot | null>(null)
   const [opensAt, setOpensAt] = useState<number | null>(null)
-  const [serverTimeOffset, setServerTimeOffset] = useState(0) // Client time - Server time offset in ms
+  const startedAt = useRef(0)
   const submitting = useRef(false)
   const away = useRef(false)
 
@@ -164,8 +162,7 @@ export default function ExamDashboard() {
   const startsTime = mySlot ? new Date(mySlot.starts_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : ''
   const startsDate = mySlot ? new Date(mySlot.starts_at).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : ''
 
-  // Calculate remaining time based on server-provided end time
-  const secondsLeft = session ? Math.max(0, Math.floor((new Date(session.ends_at).getTime() - (now - serverTimeOffset)) / 1000)) : 0
+  const secondsLeft = session ? session.seconds_left - Math.floor((now - startedAt.current) / 1000) : 0
 
   useEffect(() => {
     if (stage !== 'test' && !notYetOpen) return
@@ -173,47 +170,15 @@ export default function ExamDashboard() {
     return () => clearInterval(id)
   }, [stage, notYetOpen])
 
-  // Sync with server time every 30 seconds during exam to prevent clock drift/manipulation
-  useEffect(() => {
-    if (stage !== 'test' || !session) return
-    const syncTime = async () => {
-      try {
-        const res = await api.get<{ server_time: string; ends_at: string }>(`/exam/sessions/${session.session_id}/time`)
-        const clientTime = Date.now()
-        const serverTime = new Date(res.data.server_time).getTime()
-        setServerTimeOffset(clientTime - serverTime)
-        // Update session end time in case of any discrepancies
-        setSession({ ...session, ends_at: res.data.ends_at })
-      } catch {
-        // Silently fail - continue with existing offset
-      }
-    }
-    const id = setInterval(syncTime, 30000) // Sync every 30 seconds
-    return () => clearInterval(id)
-  }, [stage, session])
-
   // Safe-exam lockdown: record every time the candidate leaves the exam window
   useEffect(() => {
     if (stage !== 'test') return
     // One "leave" can fire blur, visibilitychange and fullscreenchange together, so count it once
-    let debounceTimer: number | null = null
     const leave = (reason: string) => {
       if (away.current || submitting.current) return
       away.current = true
-
-      // Clear any pending debounce to prevent multiple counts
-      if (debounceTimer) clearTimeout(debounceTimer)
-
-      setViolations((v) => {
-        setWarning(reason)
-        return v + 1
-      })
-
-      // Allow new violations after 1 second debounce
-      debounceTimer = setTimeout(() => {
-        away.current = false
-        debounceTimer = null
-      }, 1000)
+      setViolations((v) => v + 1)
+      setWarning(reason)
     }
     const onVisibility = () => { if (document.hidden) leave('You switched to another tab or window.') }
     const onBlur = () => leave('The exam window lost focus (Alt-Tab or another app).')
@@ -230,7 +195,6 @@ export default function ExamDashboard() {
     document.addEventListener('fullscreenchange', onFullscreen)
     document.addEventListener('keydown', onKey)
     return () => {
-      if (debounceTimer) clearTimeout(debounceTimer)
       document.removeEventListener('visibilitychange', onVisibility)
       window.removeEventListener('blur', onBlur)
       document.removeEventListener('fullscreenchange', onFullscreen)
@@ -246,10 +210,8 @@ export default function ExamDashboard() {
     setError('')
     try {
       const res = await api.post<Session>('/exam/start', { key: keyInput })
-      const clientTime = Date.now()
-      const serverTime = new Date(res.data.server_time).getTime()
-      setServerTimeOffset(clientTime - serverTime) // Store offset for time calculations
-      setNow(clientTime)
+      startedAt.current = Date.now()
+      setNow(Date.now())
       setSession(res.data)
       setAnswers({})
       setViolations(0)

@@ -11,7 +11,11 @@ const NAV: Record<Role, { to: string; label: string }[]> = {
     { to: '/student/domains', label: 'Domains' },
     { to: '/exam', label: 'Take Exam' },
   ],
-  owner: [{ to: '/owner', label: 'Track Overview' }],
+  owner: [
+    { to: '/owner', label: 'Track Overview' },
+    { to: '/owner/syllabus', label: 'Syllabus' },
+    { to: '/owner/questions', label: 'Question Paper' }
+  ],
   admin: [
     { to: '/admin', label: 'Analytics' },
     { to: '/invigilator', label: 'Exam Keys' },

@@ -3,7 +3,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import delete, exists, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -19,9 +19,6 @@ staff = require_roles("invigilator", "admin")
 student_only = require_roles("student")
 
 LATE_GRACE = timedelta(minutes=2)
-# Expired keys are deleted this long after expiry (if no exam used them), so a student starting
-# right at the expiry moment never races the delete
-KEY_CLEANUP_DELAY = timedelta(minutes=10)
 GAP_THRESHOLD = 60  # topics scored below this % are reported as skill gaps
 
 
@@ -37,23 +34,17 @@ def _slot_students(db: Session, slot_id: int) -> list[dict]:
     rows = db.execute(
         select(User.id, User.name, User.reg_no)
         .join(SlotBooking, SlotBooking.user_id == User.id)
-        .where(SlotBooking.slot_id == slot_id, SlotBooking.status == "booked")
+        .where(SlotBooking.slot_id == slot_id)
         .order_by(User.name)
     ).all()
     return [{"id": r.id, "name": r.name, "reg_no": r.reg_no} for r in rows]
 
 
-def _slot_out(db: Session, slot: Slot, with_students: bool = True) -> dict | None:
+def _slot_out(db: Session, slot: Slot, with_students: bool = True) -> dict:
     domain = db.get(Domain, slot.domain_id)
-    if domain is None:
-        # Slot references a deleted domain - skip it gracefully
-        return None
-    level = db.get(Level, slot.level_id)
     students = _slot_students(db, slot.id)
     return {
         "id": slot.id, "domain_id": domain.id, "domain_name": domain.name,
-        "level_id": level.id if level else None,
-        "level_name": level.name if level else "Unknown Level",
         "starts_at": _aware(slot.starts_at), "venue": slot.venue, "capacity": slot.capacity,
         "booked": len(students), "students": students if with_students else [],
     }
@@ -63,12 +54,10 @@ def _key_out(db: Session, k: ExamKey) -> dict:
     left = int((_aware(k.expires_at) - _now()).total_seconds())
     slot = db.get(Slot, k.slot_id) if k.slot_id else None
     domain = db.get(Domain, k.domain_id)
-    # Handle deleted domain gracefully
-    domain_id = domain.id if domain else k.domain_id
-    domain_name = domain.name if domain else "Unknown Domain"
+    level = db.get(Level, k.level_id) if k.level_id else None
     return {
-        "id": k.id, "code": k.code, "domain_id": domain_id, "domain_name": domain_name,
-        "level_name": domain_name,  # Frontend compatibility - shows domain name
+        "id": k.id, "code": k.code, "domain_id": domain.id, "domain_name": domain.name,
+        "level_name": level.name if level else f"{domain.name} (any level)",
         "expires_at": _aware(k.expires_at), "seconds_left": max(0, left),
         "slot": _slot_out(db, slot) if slot else None,
     }
@@ -92,31 +81,30 @@ def catalog(db: Session = Depends(get_db), _: User = Depends(staff)):
 def keyable_slots(db: Session = Depends(get_db), _: User = Depends(staff)):
     """Slots a key can be issued for: anything starting from 6 hours ago onwards, with the students who booked it."""
     since = _now() - timedelta(hours=6)
-    # Get all slots and filter with timezone-aware comparison
-    all_slots = db.scalars(select(Slot).order_by(Slot.starts_at)).all()
-    slots = [s for s in all_slots if _aware(s.starts_at) >= since]
-    # Filter out None (slots with deleted domains) and return
-    return [out for s in slots if (out := _slot_out(db, s)) is not None]
+    slots = db.scalars(select(Slot).where(Slot.starts_at >= since).order_by(Slot.starts_at)).all()
+    return [_slot_out(db, s) for s in slots]
 
 
 @router.post("/keys", status_code=status.HTTP_201_CREATED)
 def issue_key(body: KeyIn, db: Session = Depends(get_db), user: User = Depends(staff)):
-    # Keys must be slot-based only - students at any level in that domain can use the key
-    if body.slot_id is None:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "slot_id is required. Keys must be issued for a specific slot.")
+    slot = None
+    domain_id = None
+    level_id = None
 
-    slot = db.get(Slot, body.slot_id)
-    if slot is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Slot not found")
-
-    domain_id = slot.domain_id
-    level_id = None  # Students use their enrollment's current_level, not slot's level
-
-    # Expired keys no exam used are worthless, so drop them. Keys an exam used stay as part of its record.
-    db.execute(delete(ExamKey).where(
-        ExamKey.expires_at <= _now() - KEY_CLEANUP_DELAY,
-        ~exists().where(ExamSession.key_id == ExamKey.id),
-    ))
+    if body.slot_id is not None:
+        # Key for a specific slot - any level student in that domain can use it
+        slot = db.get(Slot, body.slot_id)
+        if slot is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Slot not found")
+        domain_id = slot.domain_id
+        level_id = None  # Will be determined from student's enrollment
+    else:
+        # Key for a specific level (legacy mode or manual override)
+        level = db.get(Level, body.level_id)
+        if level is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Level not found")
+        domain_id = level.domain_id
+        level_id = level.id
 
     for _ in range(20):
         code = f"SKL-{secrets.randbelow(9000) + 1000}"
@@ -131,26 +119,17 @@ def issue_key(body: KeyIn, db: Session = Depends(get_db), user: User = Depends(s
         expires_at=_now() + timedelta(minutes=body.minutes or get_settings(db)["key_minutes"]),
     )
     db.add(key)
-    try:
-        domain = db.get(Domain, domain_id)
-        domain_name = domain.name if domain else "Unknown Domain"
-        where = f" ({slot.venue}, slot #{slot.id})" if slot else ""
-        db.add(ActivityLog(user_id=user.id, action=f"Exam key issued for {domain_name}{where}"))
-        db.commit()
-    except Exception:
-        db.rollback()
-        # If logging fails, we still want to issue the key
-        db.add(key)
-        db.commit()
-
+    domain = db.get(Domain, domain_id)
+    where = f" ({slot.venue}, slot #{slot.id})" if slot else ""
+    db.add(ActivityLog(user_id=user.id, action=f"Exam key issued for {domain.name}{where}"))
+    db.commit()
     return _key_out(db, key)
 
 
 @router.get("/keys")
-def recent_keys(db: Session = Depends(get_db), _: User = Depends(staff)):
-    # Only keys that can still be used, from all staff; past keys are not shown
+def recent_keys(db: Session = Depends(get_db), user: User = Depends(staff)):
     keys = db.scalars(
-        select(ExamKey).where(ExamKey.expires_at > _now()).order_by(ExamKey.id.desc()).limit(20)
+        select(ExamKey).where(ExamKey.issued_by == user.id).order_by(ExamKey.id.desc()).limit(10)
     ).all()
     return [_key_out(db, k) for k in keys]
 
@@ -162,25 +141,16 @@ def _pick_questions(db: Session, level: Level) -> list[Question]:
     by_difficulty: dict[str, list[Question]] = {"easy": [], "medium": [], "hard": []}
     for q in bank:
         by_difficulty.setdefault(q.difficulty, []).append(q)
-
-    # Use integer division to avoid rounding errors, allocate remainder to hard questions
-    easy_count = int(level.question_count * level.easy_pct / 100)
-    medium_count = int(level.question_count * level.medium_pct / 100)
-    hard_count = level.question_count - easy_count - medium_count  # Ensures exact total
-
-    targets = {"easy": easy_count, "medium": medium_count, "hard": hard_count}
-
+    targets = {
+        "easy": round(level.question_count * level.easy_pct / 100),
+        "medium": round(level.question_count * level.medium_pct / 100),
+        "hard": round(level.question_count * level.hard_pct / 100),
+    }
     chosen: list[Question] = []
     for difficulty, pool in by_difficulty.items():
-        target = targets.get(difficulty, 0)
-        if target > 0:
-            chosen += random.sample(pool, min(len(pool), target))
-
-    # If we still need more questions (due to insufficient questions in specific difficulties)
+        chosen += random.sample(pool, min(len(pool), targets.get(difficulty, 0)))
     leftover = [q for q in bank if q not in chosen]
-    if len(chosen) < level.question_count and leftover:
-        chosen += random.sample(leftover, min(len(leftover), level.question_count - len(chosen)))
-
+    chosen += random.sample(leftover, min(len(leftover), max(0, level.question_count - len(chosen))))
     random.shuffle(chosen)
     return chosen
 
@@ -188,13 +158,10 @@ def _pick_questions(db: Session, level: Level) -> list[Question]:
 def _session_out(db: Session, session: ExamSession, level: Level) -> dict:
     questions = {q.id: q for q in db.scalars(select(Question).where(Question.id.in_(session.question_ids)))}
     ids = [qid for qid in session.question_ids if qid in questions]
-    now = _now()
     return {
         "session_id": session.id,
         "level": {"id": level.id, "name": level.name, "pass_mark": level.pass_mark},
-        "seconds_left": max(0, int((_aware(session.ends_at) - now).total_seconds())),
-        "server_time": now.isoformat(),  # Send server time for client sync
-        "ends_at": _aware(session.ends_at).isoformat(),
+        "seconds_left": max(0, int((_aware(session.ends_at) - _now()).total_seconds())),
         "questions": [
             {"id": qid, "text": questions[qid].text, "options": questions[qid].options}
             for qid in ids
@@ -240,9 +207,6 @@ def my_slot(db: Session = Depends(get_db), user: User = Depends(student_only)):
     if slot is None:
         return None
     domain = db.get(Domain, slot.domain_id)
-    # Handle deleted domain gracefully
-    if domain is None:
-        return None
     # Get student's current level in this domain
     enrollment = db.scalar(
         select(Enrollment).where(Enrollment.user_id == user.id, Enrollment.domain_id == slot.domain_id)
@@ -301,49 +265,12 @@ def start_exam(body: StartIn, db: Session = Depends(get_db), user: User = Depend
             ExamSession.user_id == user.id, ExamSession.level_id == level.id, ExamSession.submitted_at.is_(None),
         ).order_by(ExamSession.id.desc())
     )
-    if open_session:
-        now = _now()
-        if _aware(open_session.ends_at) > now:
-            # Session still valid, resume it
-            return _session_out(db, open_session, level)
-        else:
-            # Session expired without submission - auto-submit with zero score
-            open_session.submitted_at = now
-            open_session.violations = 0
-            # Get enrollment without eligibility check (session already started)
-            enr = db.scalar(
-                select(Enrollment).where(
-                    Enrollment.user_id == user.id, Enrollment.domain_id == level.domain_id, Enrollment.status == "active"
-                )
-            )
-            if enr:
-                outcome = record_attempt(db, user, level, enr, 0, None, None)
-                db.add(ActivityLog(
-                    user_id=user.id,
-                    action=f"{user.name}: Auto-submitted expired session for {level.name} (time ran out)"
-                ))
-                db.commit()
-                raise HTTPException(
-                    status.HTTP_410_GONE,
-                    f"Your previous exam session expired without submission and was recorded as a failed attempt. "
-                    f"You have used {outcome['attempt_no']} attempt(s)."
-                )
-            else:
-                # Enrollment no longer exists or is inactive
-                db.commit()
-                raise HTTPException(
-                    status.HTTP_410_GONE,
-                    "Your previous exam session expired. Please contact your administrator."
-                )
+    if open_session and _aware(open_session.ends_at) > _now():
+        return _session_out(db, open_session, level)
 
     questions = _pick_questions(db, level)
     if not questions:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No questions have been added for this level yet")
-    if len(questions) < level.question_count:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND,
-            f"Insufficient questions for this exam. Need {level.question_count}, but only {len(questions)} available. Contact your administrator."
-        )
     now = _now()
     session = ExamSession(
         user_id=user.id, level_id=level.id, key_id=key.id, question_ids=[q.id for q in questions],
@@ -353,22 +280,6 @@ def start_exam(body: StartIn, db: Session = Depends(get_db), user: User = Depend
     db.add(ActivityLog(user_id=user.id, action=f"{user.name} started {level.name}"))
     db.commit()
     return _session_out(db, session, level)
-
-
-@router.get("/sessions/{session_id}/time")
-def session_time(session_id: int, db: Session = Depends(get_db), user: User = Depends(student_only)):
-    """Return server time and remaining seconds for client sync during exam."""
-    session = db.get(ExamSession, session_id)
-    if session is None or session.user_id != user.id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
-    if session.submitted_at is not None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Exam already submitted")
-    now = _now()
-    return {
-        "server_time": now.isoformat(),
-        "ends_at": _aware(session.ends_at).isoformat(),
-        "seconds_left": max(0, int((_aware(session.ends_at) - now).total_seconds())),
-    }
 
 
 @router.post("/sessions/{session_id}/submit")

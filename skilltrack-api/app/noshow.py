@@ -44,9 +44,26 @@ def run_noshow_job() -> int:
 
         for booking in candidates:
             slot = db.get(Slot, booking.slot_id)
-            level = db.get(Level, slot.level_id)
             user = db.get(User, booking.user_id)
-            if user is None or level is None:
+            if user is None:
+                continue
+
+            domain_enrollment = db.scalar(
+                select(Enrollment).where(
+                    Enrollment.user_id == booking.user_id,
+                    Enrollment.domain_id == slot.domain_id,
+                    Enrollment.status == "active",
+                )
+            )
+            level = db.scalar(
+                select(Level).where(
+                    Level.domain_id == slot.domain_id,
+                    Level.number == domain_enrollment.current_level,
+                )
+            ) if domain_enrollment else None
+            if level is None:
+                booking.status = "missed"
+                db.commit()
                 continue
 
             slot_start = _aware(slot.starts_at)
@@ -64,21 +81,9 @@ def run_noshow_job() -> int:
                 db.commit()
                 continue
 
-            enr = db.scalar(
-                select(Enrollment).where(
-                    Enrollment.user_id == booking.user_id,
-                    Enrollment.domain_id == level.domain_id,
-                    Enrollment.status == "active",
-                )
-            )
-            if enr is None:
-                booking.status = "missed"
-                db.commit()
-                continue
-
             # Mark missed and record zero-score attempt (counts toward max_attempts)
             booking.status = "missed"
-            record_attempt(db, user, level, enr, 0, None)
+            record_attempt(db, user, level, domain_enrollment, 0, None)
             db.add(ActivityLog(
                 user_id=booking.user_id,
                 action=f"No-show for {level.name} — attempt recorded with score 0",

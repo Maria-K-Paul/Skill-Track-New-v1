@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import { REFRESH_KEY, TOKEN_KEY, api, setSessionExpiredHandler } from '../api'
+import { TOKEN_KEY, api } from '../api'
 
 export type Role = 'student' | 'owner' | 'admin' | 'invigilator'
 
@@ -39,55 +39,34 @@ interface AuthCtx {
 
 const AuthContext = createContext<AuthCtx | null>(null)
 
-interface TokenResponse {
-  access_token: string
-  refresh_token: string
-  user: User
-}
-
-function saveTokens(res: TokenResponse) {
-  localStorage.setItem(TOKEN_KEY, res.access_token)
-  localStorage.setItem(REFRESH_KEY, res.refresh_token)
-}
-
-function clearTokens() {
-  localStorage.removeItem(TOKEN_KEY)
-  localStorage.removeItem(REFRESH_KEY)
-}
-
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(() => !!localStorage.getItem(TOKEN_KEY))
 
   useEffect(() => {
-    // The refresh token ran out (1 day after sign-in): drop the session so the pages redirect to /login
-    setSessionExpiredHandler(() => {
-      clearTokens()
-      setUser(null)
-    })
     if (!localStorage.getItem(TOKEN_KEY)) return
     api.get<User>('/auth/me')
       .then((res) => setUser(res.data))
-      .catch(clearTokens)
+      .catch(() => localStorage.removeItem(TOKEN_KEY))
       .finally(() => setLoading(false))
   }, [])
 
   async function login(email: string, password: string) {
-    const res = await api.post<TokenResponse>('/auth/login', { email, password })
-    saveTokens(res.data)
+    const res = await api.post<{ access_token: string; user: User }>('/auth/login', { email, password })
+    localStorage.setItem(TOKEN_KEY, res.data.access_token)
     setUser(res.data.user)
     return res.data.user
   }
 
   async function register(details: RegisterDetails) {
-    const res = await api.post<TokenResponse>('/auth/register', details)
-    saveTokens(res.data)
+    const res = await api.post<{ access_token: string; user: User }>('/auth/register', details)
+    localStorage.setItem(TOKEN_KEY, res.data.access_token)
     setUser(res.data.user)
     return res.data.user
   }
 
   function logout() {
-    clearTokens()
+    localStorage.removeItem(TOKEN_KEY)
     setUser(null)
   }
 
