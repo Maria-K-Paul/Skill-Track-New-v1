@@ -5,6 +5,7 @@ detection (token theft), sign-out, sign-out everywhere, one session per student,
     DATABASE_URL=<test db> python checks/test_session_tokens.py
 """
 import os
+import re
 import time
 import uuid
 import warnings
@@ -22,7 +23,7 @@ from sqlalchemy import select  # noqa: E402
 
 import seed  # noqa: E402
 from app import security  # noqa: E402
-from app.config import REFRESH_COOKIE_NAME  # noqa: E402
+from app.config import REFRESH_COOKIE_NAME, REFRESH_TOKEN_MINUTES as security_minutes  # noqa: E402
 from app.database import SessionLocal  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import ActivityLog, AuthSession, RefreshToken, User  # noqa: E402
@@ -70,6 +71,9 @@ check("sign-in works", r.status_code == 200 and access, r.status_code)
 check("no refresh token in the response body", "refresh_token" not in r.json())
 check("refresh cookie is HttpOnly, Secure, SameSite=Strict",
       all(flag in cookie_header.lower() for flag in ("httponly", "secure", "samesite=strict")), cookie_header[:120])
+max_age = re.search(r"max-age=(\d+)", cookie_header.lower())
+check("cookie survives a browser restart for the session's day (Max-Age ~ 1 day)",
+      max_age and abs(int(max_age.group(1)) - security_minutes * 60) < 120, max_age and max_age.group(0))
 check("access token names its session and lasts 15 min",
       "sid" in claims(access) and round((claims(access)["exp"] - time.time()) / 60) == security.ACCESS_TOKEN_MINUTES)
 check("access token works", me(alice, access).status_code == 200)
@@ -121,12 +125,12 @@ _, pc2_access = sign_in(pc2, "arun@college.edu")
 check("student's first session ended by the second sign-in", me(pc1, pc1_access).status_code == 401)
 check("student's second session works", me(pc2, pc2_access).status_code == 200)
 
-# 8. Idle timeout: a session not refreshed for over an hour ends
+# 8. No idle timeout by default: a session unused for hours still refreshes within its day
 with SessionLocal() as db:
     s = db.get(AuthSession, claims(pc2_access)["sid"])
-    s.last_used_at = datetime.now(timezone.utc) - timedelta(minutes=61)
+    s.last_used_at = datetime.now(timezone.utc) - timedelta(hours=3)
     db.commit()
-check("idle session refused at refresh", pc2.post("/auth/refresh").status_code == 401)
+check("session unused for 3 hours still refreshes (idle timeout off)", pc2.post("/auth/refresh").status_code == 200)
 
 # 9. Fixed 1-day limit: an expired session refuses its access token too
 lab = browser()
@@ -168,6 +172,34 @@ browser().post("/auth/login", json={"email": "admin@college.edu", "password": "w
 with SessionLocal() as db:
     failed = db.scalar(select(ActivityLog).where(ActivityLog.action == "Failed sign-in for admin@college.edu"))
 check("failed sign-in logged", failed is not None)
+
+# 13. Upgrade handover: a refresh token from the previous version (a JWT kept in localStorage) is swapped once
+with SessionLocal() as db:
+    admin_id = db.scalar(select(User.id).where(User.email == "admin@college.edu"))
+legacy = jwt.encode({"sub": str(admin_id), "type": "refresh", "exp": int(time.time()) + 3600},
+                    security.SECRET_KEY, algorithm="HS256")
+upgraded = browser()
+r = upgraded.post("/auth/refresh", json={"refresh_token": legacy})
+check("old-version refresh token swapped for a session", r.status_code == 200 and upgraded.cookies.get(REFRESH_COOKIE_NAME))
+legacy_access = r.json().get("access_token", "")
+check("...and its new access token works", me(upgraded, legacy_access).status_code == 200)
+check("same old token again within the grace window -> 409",
+      browser().post("/auth/refresh", json={"refresh_token": legacy}).status_code == 409)
+with SessionLocal() as db:
+    row = db.scalar(select(RefreshToken).where(RefreshToken.token_hash == security.hash_refresh_token(legacy)))
+    row.used_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    db.commit()
+check("a copy of the old token used later -> refused",
+      browser().post("/auth/refresh", json={"refresh_token": legacy}).status_code == 401)
+check("...and the handed-over session is ended (theft rule)", me(upgraded, legacy_access).status_code == 401)
+old_access = jwt.encode({"sub": str(admin_id), "type": "access", "exp": int(time.time()) + 600},
+                        security.SECRET_KEY, algorithm="HS256")
+check("an old access token is not accepted for the handover",
+      browser().post("/auth/refresh", json={"refresh_token": old_access}).status_code == 401)
+expired = jwt.encode({"sub": str(admin_id), "type": "refresh", "exp": int(time.time()) - 10},
+                     security.SECRET_KEY, algorithm="HS256")
+check("an expired old refresh token is refused",
+      browser().post("/auth/refresh", json={"refresh_token": expired}).status_code == 401)
 
 print(f"\n{sum(results)}/{len(results)} checks passed")
 raise SystemExit(0 if all(results) else 1)

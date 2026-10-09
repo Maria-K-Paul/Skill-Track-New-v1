@@ -6,21 +6,24 @@ from sqlalchemy.orm import Session
 from ..config import REFRESH_COOKIE_NAME
 from ..database import get_db
 from ..deps import get_current_user, require_roles
-from ..models import User
+from ..models import AuthSession, User
 from ..ratelimit import login_failures
 from ..rules import ensure_common_enrollment
-from ..schemas import LoginIn, RegisterIn, TokenOut, UserOut
-from ..security import hash_password, verify_password
+from ..schemas import LegacyRefreshIn, LoginIn, RegisterIn, TokenOut, UserOut
+from ..security import decode_access_token, hash_password, verify_password
 from ..sessions import (
-    clear_refresh_cookie, log, revoke, revoke_all, rotate, session_for_token, set_refresh_cookie, start_session,
+    SESSION_ENDED, adopt_legacy_token, clear_refresh_cookie, log, revoke, revoke_all, rotate, session_for_token,
+    set_refresh_cookie, start_session,
 )
 
 router = APIRouter(tags=["auth"])
 
 
-def _signed_in(response: Response, user: User, access_token: str, refresh_token: str) -> TokenOut:
-    """The refresh token goes only into the httpOnly cookie; the body carries the access token and the user."""
-    set_refresh_cookie(response, refresh_token)
+def _signed_in(response: Response, db: Session, user: User, access_token: str, refresh_token: str) -> TokenOut:
+    """The refresh token goes only into the httpOnly cookie, which lasts as long as its session; the body
+    carries the access token and the user."""
+    session = db.get(AuthSession, decode_access_token(access_token)["sid"])
+    set_refresh_cookie(response, refresh_token, session.expires_at)
     return TokenOut(access_token=access_token, user=UserOut.model_validate(user))
 
 
@@ -41,7 +44,7 @@ def register(body: RegisterIn, request: Request, response: Response, db: Session
     log(db, user.id, f"Student {user.name} registered")
     access, refresh_token = start_session(db, user, request)
     db.commit()
-    return _signed_in(response, user, access, refresh_token)
+    return _signed_in(response, db, user, access, refresh_token)
 
 
 @router.post("/auth/login", response_model=TokenOut)
@@ -57,22 +60,31 @@ def login(body: LoginIn, request: Request, response: Response, db: Session = Dep
     access, refresh_token = start_session(db, user, request)
     log(db, user.id, f"{user.name} signed in")
     db.commit()
-    return _signed_in(response, user, access, refresh_token)
+    return _signed_in(response, db, user, access, refresh_token)
 
 
 @router.post("/auth/refresh", response_model=TokenOut)
-def refresh(request: Request, response: Response, db: Session = Depends(get_db)):
+def refresh(
+    request: Request, response: Response, body: LegacyRefreshIn | None = None, db: Session = Depends(get_db),
+):
     """Swap the refresh cookie for a new access token and a new refresh cookie (each refresh token works once).
-    Also used on page load to restore the session, since the access token is kept only in page memory."""
+    Also used on page load to restore the session, since the access token is kept only in page memory.
+    Without a cookie, a refresh token from the previous version (sent in the body) is exchanged once."""
     try:
-        user, access, refresh_token = rotate(db, request.cookies.get(REFRESH_COOKIE_NAME))
+        cookie = request.cookies.get(REFRESH_COOKIE_NAME)
+        if cookie:
+            user, access, refresh_token = rotate(db, cookie)
+        elif body is not None and body.refresh_token:
+            user, access, refresh_token = adopt_legacy_token(db, body.refresh_token, request)
+        else:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, SESSION_ENDED)
     except HTTPException as exc:
         if exc.status_code != status.HTTP_401_UNAUTHORIZED:
             raise
         ended = JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
         clear_refresh_cookie(ended)
         return ended
-    return _signed_in(response, user, access, refresh_token)
+    return _signed_in(response, db, user, access, refresh_token)
 
 
 @router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)

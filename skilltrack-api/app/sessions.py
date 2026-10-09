@@ -6,12 +6,13 @@ issues a new one. A replaced token showing up again means two parties hold it, s
 """
 from datetime import datetime, timedelta, timezone
 
+import jwt
 from fastapi import HTTPException, Request, Response, status
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.orm import Session
 
 from .config import (
-    ONE_SESSION_PER_STUDENT, REFRESH_COOKIE_NAME, REFRESH_COOKIE_PATH, REFRESH_REUSE_GRACE_SECONDS,
+    ALGORITHM, ONE_SESSION_PER_STUDENT, SECRET_KEY, REFRESH_COOKIE_NAME, REFRESH_COOKIE_PATH, REFRESH_REUSE_GRACE_SECONDS,
     REFRESH_TOKEN_MINUTES, SESSION_IDLE_MINUTES,
 )
 from .database import SessionLocal
@@ -52,8 +53,9 @@ def revoke_all(db: Session, user_id: int, reason: str) -> int:
     return result.rowcount or 0
 
 
-def start_session(db: Session, user: User, request: Request) -> tuple[str, str]:
-    """Open a session for a user who just signed in. Returns (access token, refresh token). Caller commits."""
+def start_session(db: Session, user: User, request: Request, spent_token: str | None = None) -> tuple[str, str]:
+    """Open a session for a user who just signed in. Returns (access token, refresh token). Caller commits.
+    `spent_token` is recorded as already used, so presenting it again counts as reuse."""
     if ONE_SESSION_PER_STUDENT and user.role == "student" and revoke_all(db, user.id, "signed in elsewhere"):
         log(db, user.id, f"{user.name} signed in again, so their other session was ended")
     now = _now()
@@ -64,6 +66,8 @@ def start_session(db: Session, user: User, request: Request) -> tuple[str, str]:
     )
     db.add(session)
     db.flush()
+    if spent_token:
+        db.add(RefreshToken(session_id=session.id, token_hash=hash_refresh_token(spent_token), created_at=now, used_at=now))
     token, token_hash = new_refresh_token()
     db.add(RefreshToken(session_id=session.id, token_hash=token_hash, created_at=now))
     return create_access_token(user.id, user.role, session.id, not_after=session.expires_at), token
@@ -97,7 +101,7 @@ def rotate(db: Session, raw_token: str | None) -> tuple[User, str, str]:
         log(db, user.id, f"{user.name}: an old sign-in token was used again, so the session was ended (possible theft)")
         db.commit()
         raise ended
-    if now - _aware(session.last_used_at) > timedelta(minutes=SESSION_IDLE_MINUTES):
+    if SESSION_IDLE_MINUTES and now - _aware(session.last_used_at) > timedelta(minutes=SESSION_IDLE_MINUTES):
         revoke(session, "idle")
         db.commit()
         raise ended
@@ -110,6 +114,27 @@ def rotate(db: Session, raw_token: str | None) -> tuple[User, str, str]:
     return user, access, token
 
 
+def adopt_legacy_token(db: Session, token: str, request: Request) -> tuple[User, str, str]:
+    """Transition from the previous version, which kept a signed refresh JWT in localStorage: exchange it once
+    for a session, so nobody is signed out by the upgrade. Those tokens expire within a day of their sign-in,
+    so a day after deploying this path is no longer used and can be removed. Commits."""
+    ended = HTTPException(status.HTTP_401_UNAUTHORIZED, SESSION_ENDED)
+    if db.scalar(select(RefreshToken.id).where(RefreshToken.token_hash == hash_refresh_token(token))) is not None:
+        return rotate(db, token)  # already exchanged once: a second use is handled like any reused token
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        if payload.get("type") != "refresh" or "sid" in payload:
+            raise jwt.InvalidTokenError("Not a refresh token from the previous version")
+        user = db.get(User, int(payload["sub"]))
+    except (jwt.InvalidTokenError, KeyError, ValueError):
+        raise ended
+    if user is None or not user.is_active:
+        raise ended
+    access, new_token = start_session(db, user, request, spent_token=token)
+    db.commit()
+    return user, access, new_token
+
+
 def session_for_token(db: Session, raw_token: str | None) -> AuthSession | None:
     if not raw_token:
         return None
@@ -117,10 +142,12 @@ def session_for_token(db: Session, raw_token: str | None) -> AuthSession | None:
     return db.get(AuthSession, row.session_id) if row else None
 
 
-def set_refresh_cookie(response: Response, token: str) -> None:
-    # No max_age: the browser forgets it when it closes (shared lab computers); the server caps it at 1 day anyway
+def set_refresh_cookie(response: Response, token: str, expires_at: datetime) -> None:
+    # Lives exactly as long as its session, so closing the browser does not sign the user out
+    max_age = max(0, int((_aware(expires_at) - _now()).total_seconds()))
     response.set_cookie(
-        REFRESH_COOKIE_NAME, token, httponly=True, secure=True, samesite="strict", path=REFRESH_COOKIE_PATH,
+        REFRESH_COOKIE_NAME, token, max_age=max_age, httponly=True, secure=True, samesite="strict",
+        path=REFRESH_COOKIE_PATH,
     )
 
 

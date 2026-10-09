@@ -13,12 +13,15 @@ export function setAccessToken(token: string | null) {
   accessToken = token
 }
 
-// Older versions kept both tokens in localStorage; remove them
+// The previous version kept both tokens in localStorage. Its refresh token is sent once, with the first refresh,
+// so the server can swap it for a session cookie and nobody is signed out by the upgrade. Both are removed now.
+let legacyRefreshToken: string | null = null
 try {
+  legacyRefreshToken = localStorage.getItem('skilltrack_refresh_token')
   localStorage.removeItem('skilltrack_token')
   localStorage.removeItem('skilltrack_refresh_token')
 } catch {
-  // storage unavailable (private mode): nothing to clean
+  // storage unavailable (private mode): nothing to carry over
 }
 
 api.interceptors.request.use((config) => {
@@ -39,7 +42,9 @@ export function setSessionExpiredHandler(handler: () => void) {
 }
 
 function postRefresh() {
-  return axios.post<SessionData>('/auth/refresh', null, { baseURL: api.defaults.baseURL, withCredentials: true })
+  const body = legacyRefreshToken ? { refresh_token: legacyRefreshToken } : null
+  legacyRefreshToken = null  // sent at most once
+  return axios.post<SessionData>('/auth/refresh', body, { baseURL: api.defaults.baseURL, withCredentials: true })
 }
 
 async function callRefresh(): Promise<SessionData> {

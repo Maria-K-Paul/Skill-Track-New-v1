@@ -37,6 +37,11 @@ class TokenOut(BaseModel):
     user: UserOut
 
 
+class LegacyRefreshIn(BaseModel):
+    """Transition only: the previous version sent its refresh token in the body (see adopt_legacy_token)."""
+    refresh_token: str | None = None
+
+
 class EnrollIn(BaseModel):
     domain_id: int
 

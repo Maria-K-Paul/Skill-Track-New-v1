@@ -37,9 +37,10 @@ if len(SECRET_KEY) < 32 or SECRET_KEY.startswith("change-me"):
 ACCESS_TOKEN_MINUTES = int(os.environ.get("ACCESS_TOKEN_MINUTES", "15"))
 # A sign-in lasts at most this long (the refresh token is rotated on every use but never extends it)
 REFRESH_TOKEN_MINUTES = int(os.environ.get("REFRESH_TOKEN_MINUTES", "1440"))
-# A session that has not refreshed for this long ends (e.g. a lab computer left signed in). The exam page
-# talks to the API every 30 seconds, so an exam in progress never goes idle.
-SESSION_IDLE_MINUTES = int(os.environ.get("SESSION_IDLE_MINUTES", "60"))
+# Optional: end a session that has not refreshed for this many minutes (e.g. a lab computer left signed in).
+# 0 = off, so a sign-in lasts the full REFRESH_TOKEN_MINUTES, across browser restarts. The exam page talks to
+# the API every 30 seconds, so an exam in progress never counts as idle.
+SESSION_IDLE_MINUTES = int(os.environ.get("SESSION_IDLE_MINUTES", "0"))
 # Two tabs can refresh at the same moment with the same cookie; a just-replaced refresh token used within this
 # window is refused without ending the session. Later use means it was copied, so the session is ended.
 REFRESH_REUSE_GRACE_SECONDS = int(os.environ.get("REFRESH_REUSE_GRACE_SECONDS", "20"))
