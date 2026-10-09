@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import { REFRESH_KEY, TOKEN_KEY, api, setSessionExpiredHandler } from '../api'
+import { api, refreshSession, setAccessToken, setSessionExpiredHandler } from '../api'
 
 export type Role = 'student' | 'owner' | 'admin' | 'invigilator'
 
@@ -34,64 +34,69 @@ interface AuthCtx {
   loading: boolean
   login: (email: string, password: string) => Promise<User>
   register: (details: RegisterDetails) => Promise<User>
-  logout: () => void
+  logout: () => Promise<void>
+  logoutEverywhere: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthCtx | null>(null)
 
+// The refresh token is never here: the API sets it as an httpOnly cookie
 interface TokenResponse {
   access_token: string
-  refresh_token: string
   user: User
-}
-
-function saveTokens(res: TokenResponse) {
-  localStorage.setItem(TOKEN_KEY, res.access_token)
-  localStorage.setItem(REFRESH_KEY, res.refresh_token)
-}
-
-function clearTokens() {
-  localStorage.removeItem(TOKEN_KEY)
-  localStorage.removeItem(REFRESH_KEY)
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
-  const [loading, setLoading] = useState(() => !!localStorage.getItem(TOKEN_KEY))
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    // The refresh token ran out (1 day after sign-in): drop the session so the pages redirect to /login
+    // The session ended (signed out elsewhere, idle, 1 day passed, or a stolen token was detected)
     setSessionExpiredHandler(() => {
-      clearTokens()
+      setAccessToken(null)
       setUser(null)
     })
-    if (!localStorage.getItem(TOKEN_KEY)) return
-    api.get<User>('/auth/me')
-      .then((res) => setUser(res.data))
-      .catch(clearTokens)
+    // The access token is kept only in memory, so after a reload get a new one with the refresh cookie
+    refreshSession()
+      .then((data) => setUser((data as TokenResponse).user))
+      .catch(() => setAccessToken(null))
       .finally(() => setLoading(false))
   }, [])
 
+  function signedIn(data: TokenResponse) {
+    setAccessToken(data.access_token)
+    setUser(data.user)
+    return data.user
+  }
+
   async function login(email: string, password: string) {
-    const res = await api.post<TokenResponse>('/auth/login', { email, password })
-    saveTokens(res.data)
-    setUser(res.data.user)
-    return res.data.user
+    return signedIn((await api.post<TokenResponse>('/auth/login', { email, password })).data)
   }
 
   async function register(details: RegisterDetails) {
-    const res = await api.post<TokenResponse>('/auth/register', details)
-    saveTokens(res.data)
-    setUser(res.data.user)
-    return res.data.user
+    return signedIn((await api.post<TokenResponse>('/auth/register', details)).data)
   }
 
-  function logout() {
-    clearTokens()
-    setUser(null)
+  // Ends the session on the server too, so the refresh cookie and any copy of the tokens stop working
+  async function endSession(path: string) {
+    try {
+      await api.post(path)
+    } catch {
+      // already ended or offline: sign out locally anyway
+    } finally {
+      setAccessToken(null)
+      setUser(null)
+    }
   }
 
-  return <AuthContext.Provider value={{ user, loading, login, register, logout }}>{children}</AuthContext.Provider>
+  const logout = () => endSession('/auth/logout')
+  const logoutEverywhere = () => endSession('/auth/logout-all')
+
+  return (
+    <AuthContext.Provider value={{ user, loading, login, register, logout, logoutEverywhere }}>
+      {children}
+    </AuthContext.Provider>
+  )
 }
 
 export function useAuth() {

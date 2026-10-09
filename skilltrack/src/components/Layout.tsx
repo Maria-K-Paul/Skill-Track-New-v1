@@ -40,7 +40,7 @@ function SunIcon() {
 }
 
 export default function Layout() {
-  const { user, loading, logout } = useAuth()
+  const { user, loading, logout, logoutEverywhere } = useAuth()
   const { theme, toggle } = useTheme()
   const navigate = useNavigate()
   const location = useLocation()
@@ -58,7 +58,10 @@ export default function Layout() {
   if (loading) return <div className="p-6 text-sm text-slate-500 dark:text-slate-400">Loading…</div>
   if (!user) return <Navigate to="/login" replace />
 
-  function signOut() { logout(); navigate('/login', { replace: true }) }
+  async function signOut(everywhere = false) {
+    await (everywhere ? logoutEverywhere() : logout())
+    navigate('/login', { replace: true })
+  }
   const initial = user.name.trim().charAt(0).toUpperCase()
 
   return (
@@ -165,7 +168,14 @@ export default function Layout() {
             <span className="font-bold text-slate-800 dark:text-slate-100">{user.name}</span>
           </div>
           <button
-            onClick={signOut}
+            onClick={() => signOut(true)}
+            title="Ends your session on every computer and phone, e.g. if you think someone else is using your account"
+            className="text-xs font-semibold text-slate-500 transition hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
+          >
+            Sign out everywhere
+          </button>
+          <button
+            onClick={() => signOut()}
             className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-900 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200"
           >
             Sign out

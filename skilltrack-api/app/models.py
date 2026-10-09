@@ -170,6 +170,31 @@ class ActivityLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class AuthSession(Base):
+    """One sign-in. Every access token names its session (`sid`), so ending the session stops its tokens at once."""
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)  # random, also the token's "sid" claim
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))  # fixed at sign-in, never extended
+    last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)  # last refresh
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoke_reason: Mapped[str | None] = mapped_column(String(40))
+    user_agent: Mapped[str | None] = mapped_column(String(200))
+
+
+class RefreshToken(Base):
+    """Refresh tokens issued for a session; each works once. Only a SHA-256 hash is stored."""
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("auth_sessions.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class ExamKey(Base):
     __tablename__ = "exam_keys"
 

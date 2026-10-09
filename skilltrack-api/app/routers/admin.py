@@ -16,6 +16,7 @@ from ..rules import (
 )
 from ..schemas import AssignCommonIn, DomainIn, DomainMetaPatch, DomainPatch, PromoteIn, SettingsIn, StaffIn, UserOut, UserPatch
 from ..security import hash_password
+from ..sessions import revoke_all
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -242,6 +243,8 @@ def set_user_active(user_id: int, body: UserPatch, db: Session = Depends(get_db)
     if user.id == admin.id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "You cannot deactivate your own account")
     user.is_active = body.is_active
+    if not body.is_active:
+        revoke_all(db, user.id, "account deactivated")  # signs them out everywhere at once
     db.add(ActivityLog(user_id=admin.id, action=f"{admin.name} {'activated' if body.is_active else 'deactivated'} {user.name}"))
     db.commit()
     return user

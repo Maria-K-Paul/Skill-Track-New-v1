@@ -33,9 +33,36 @@ services:
     buildCommand: npm ci && npm run build
     staticPublishPath: dist
     envVars:
+      # The site calls the API through its own address (rewrite below), so the browser treats the API as
+      # same-site and keeps the httpOnly refresh cookie (path /api/auth)
       - key: VITE_API_URL
-        value: https://skilltrack-maria-api.onrender.com
+        value: /api
     routes:
+      # Order matters: API calls first, then every other path serves the React app
+      - type: rewrite
+        source: /api/*
+        destination: https://skilltrack-maria-api.onrender.com/*
       - type: rewrite
         source: /*
         destination: /index.html
+    headers:
+      # Only this site's own scripts may run, so an injected <script> or inline handler is blocked.
+      # blob: is for the certificate PDF and badge previews the pages create.
+      - path: /*
+        name: Content-Security-Policy
+        value: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-src 'self' blob:; object-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: Permissions-Policy
+        value: "camera=(), microphone=(), geolocation=()"
+      - path: /*
+        name: Strict-Transport-Security
+        value: max-age=31536000

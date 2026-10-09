@@ -4,8 +4,9 @@ from jwt import InvalidTokenError
 from sqlalchemy.orm import Session
 
 from .database import get_db
-from .models import User
-from .security import decode_token
+from .models import AuthSession, User
+from .security import decode_access_token
+from .sessions import is_live
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -18,10 +19,16 @@ def get_current_user(
     if creds is None:
         raise unauthorized
     try:
-        payload = decode_token(creds.credentials, "access")
-        user = db.get(User, int(payload["sub"]))
+        payload = decode_access_token(creds.credentials)
+        user_id, session_id = int(payload["sub"]), str(payload["sid"])
     except (InvalidTokenError, KeyError, ValueError):
         raise unauthorized
+    # The token's session must still be open: signing out, a detected token theft or a deactivation ends it,
+    # and its access tokens stop working immediately instead of at expiry
+    session = db.get(AuthSession, session_id)
+    if session is None or session.user_id != user_id or not is_live(session):
+        raise unauthorized
+    user = db.get(User, user_id)
     if user is None or not user.is_active:
         raise unauthorized
     return user

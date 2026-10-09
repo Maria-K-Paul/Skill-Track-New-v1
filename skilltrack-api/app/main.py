@@ -8,6 +8,7 @@ from sqlalchemy import inspect, text
 from . import models  # noqa: F401  (registers tables on Base.metadata)
 from .database import Base, engine
 from .noshow import run_noshow_job
+from .sessions import purge_old_sessions
 from .routers import admin, ai, auth, certificates, exam, owner, slots, student
 
 # Create tables first
@@ -128,6 +129,7 @@ def health():
 # ── No-show scheduler ──────────────────────────────────────────────────────────
 _scheduler = BackgroundScheduler(timezone="UTC")
 _scheduler.add_job(run_noshow_job, "interval", minutes=15, id="noshow_job", replace_existing=True)
+_scheduler.add_job(purge_old_sessions, "interval", hours=1, id="session_cleanup", replace_existing=True)
 _scheduler.start()
 
 
