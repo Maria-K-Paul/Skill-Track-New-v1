@@ -23,7 +23,7 @@ Either:
 | Rows after | `python checks/row_counts.py AFTER` | same counts as before |
 | Models vs tables | `python checks/schema_vs_models.py` | `serious mismatches: 0` |
 | Every role's endpoints | `python checks/smoke_roles.py` | `server errors: 0` |
-| Sessions & tokens | `python checks/set_demo_passwords.py` then `python checks/test_session_tokens.py` | 41/41 pass (rotation, theft detection, sign-out, upgrade handover, deactivation) |
+| Sessions & tokens | `python checks/set_demo_passwords.py` then `python checks/test_session_tokens.py` | 43/43 pass (rotation, theft detection, sign-out, upgrade handover incl. old tabs, deactivation) |
 | Exam keys | `python checks/test_exam_keys.py` | all checks pass |
 | Nizzy's feature tests | start `uvicorn app.main:app --port 8002` against the test database, then `python checks/run_feature_tests.py` | 18 PASS, 1 known FAIL (see the script) |
 | Website | `npm --prefix ../skilltrack run build` | builds with no type errors |

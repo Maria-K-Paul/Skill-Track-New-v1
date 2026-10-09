@@ -183,15 +183,22 @@ r = upgraded.post("/auth/refresh", json={"refresh_token": legacy})
 check("old-version refresh token swapped for a session", r.status_code == 200 and upgraded.cookies.get(REFRESH_COOKIE_NAME))
 legacy_access = r.json().get("access_token", "")
 check("...and its new access token works", me(upgraded, legacy_access).status_code == 200)
-check("same old token again within the grace window -> 409",
-      browser().post("/auth/refresh", json={"refresh_token": legacy}).status_code == 409)
+# A tab still running the old version sends the same old token every 15 minutes: it resumes the same session
+old_tab = browser()
+r = old_tab.post("/auth/refresh", json={"refresh_token": legacy})
+check("old tab sending the same old token again -> same session, still signed in",
+      r.status_code == 200 and claims(r.json()["access_token"])["sid"] == claims(legacy_access)["sid"])
 with SessionLocal() as db:
     row = db.scalar(select(RefreshToken).where(RefreshToken.token_hash == security.hash_refresh_token(legacy)))
-    row.used_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    row.used_at = datetime.now(timezone.utc) - timedelta(minutes=20)
     db.commit()
-check("a copy of the old token used later -> refused",
+r = old_tab.post("/auth/refresh", json={"refresh_token": legacy})
+check("...20 minutes later too, with no false theft alarm", r.status_code == 200 and me(upgraded, legacy_access).status_code == 200)
+check("the new site's tab keeps rotating its cookie normally", upgraded.post("/auth/refresh").status_code == 200)
+# Signing out ends that session, so the old token no longer opens anything
+check("sign-out of the handed-over session -> 204", upgraded.post("/auth/logout").status_code == 204)
+check("old token refused after that sign-out",
       browser().post("/auth/refresh", json={"refresh_token": legacy}).status_code == 401)
-check("...and the handed-over session is ended (theft rule)", me(upgraded, legacy_access).status_code == 401)
 old_access = jwt.encode({"sub": str(admin_id), "type": "access", "exp": int(time.time()) + 600},
                         security.SECRET_KEY, algorithm="HS256")
 check("an old access token is not accepted for the handover",

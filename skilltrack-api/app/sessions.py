@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 from fastapi import HTTPException, Request, Response, status
 from sqlalchemy import delete, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .config import (
@@ -115,14 +116,14 @@ def rotate(db: Session, raw_token: str | None) -> tuple[User, str, str]:
 
 
 def adopt_legacy_token(db: Session, token: str, request: Request) -> tuple[User, str, str]:
-    """Transition from the previous version, which kept a signed refresh JWT in localStorage: exchange it once
-    for a session, so nobody is signed out by the upgrade. Those tokens expire within a day of their sign-in,
-    so a day after deploying this path is no longer used and can be removed. Commits."""
+    """Transition from the previous version, which kept a signed refresh JWT in localStorage: swap it for a
+    session, so nobody is signed out by the upgrade. Tabs still running the old version keep sending the same
+    old token every 15 minutes, so a repeat resumes the session it opened instead of counting as theft. That
+    session still ends normally (sign-out, deactivation, 1 day), and the old token stops working when it expires.
+    Those tokens expire within a day of their sign-in, so a day after deploying this path is unused. Commits."""
     ended = HTTPException(status.HTTP_401_UNAUTHORIZED, SESSION_ENDED)
-    if db.scalar(select(RefreshToken.id).where(RefreshToken.token_hash == hash_refresh_token(token))) is not None:
-        return rotate(db, token)  # already exchanged once: a second use is handled like any reused token
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])  # checks the signature and expiry
         if payload.get("type") != "refresh" or "sid" in payload:
             raise jwt.InvalidTokenError("Not a refresh token from the previous version")
         user = db.get(User, int(payload["sub"]))
@@ -130,7 +131,27 @@ def adopt_legacy_token(db: Session, token: str, request: Request) -> tuple[User,
         raise ended
     if user is None or not user.is_active:
         raise ended
-    access, new_token = start_session(db, user, request, spent_token=token)
+
+    row = db.scalar(select(RefreshToken).where(RefreshToken.token_hash == hash_refresh_token(token)))
+    if row is None:
+        try:
+            access, new_token = start_session(db, user, request, spent_token=token)
+            db.commit()
+            return user, access, new_token
+        except IntegrityError:  # another tab swapped the same old token at the same moment: resume its session
+            db.rollback()
+            row = db.scalar(select(RefreshToken).where(RefreshToken.token_hash == hash_refresh_token(token)))
+            if row is None:
+                raise ended
+
+    session = db.get(AuthSession, row.session_id)
+    if session is None or session.user_id != user.id or not is_live(session):
+        raise ended
+    now = _now()
+    session.last_used_at = now
+    new_token, new_hash = new_refresh_token()
+    db.add(RefreshToken(session_id=session.id, token_hash=new_hash, created_at=now))
+    access = create_access_token(user.id, user.role, session.id, not_after=_aware(session.expires_at))
     db.commit()
     return user, access, new_token
 
