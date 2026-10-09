@@ -27,7 +27,7 @@
 
    **You must manually add:**
    - `GEMINI_API_KEY` - Get from Google AI Studio (https://makersuite.google.com/app/apikey)
-   - Optionally: `GEMINI_MODEL` (defaults to gemini-3.6-flash)
+   - Optionally: `GEMINI_MODEL` (defaults to gemini-3.8-flash) and `GEMINI_FALLBACK_MODELS` (defaults to gemini-3.5-flash-lite,gemini-3.7-flash)
 
 4. **Update URLs in render.yaml**
    
@@ -149,7 +149,8 @@ If deployment fails:
 | SECRET_KEY | ✅ | - | JWT signing key (auto-generated) |
 | CORS_ORIGINS | ✅ | - | Frontend URL for CORS |
 | GEMINI_API_KEY | ⚠️ | - | Required for AI features |
-| GEMINI_MODEL | ❌ | gemini-3.6-flash | AI model to use |
+| GEMINI_MODEL | ❌ | gemini-3.8-flash | AI model to use |
+| GEMINI_FALLBACK_MODELS | ❌ | gemini-3.5-flash-lite,gemini-3.7-flash | Models tried when the main one is busy or rate-limited |
 | PYTHON_VERSION | ❌ | 3.12.1 | Python runtime version |
 | FRONTEND_URL | ❌ | - | Used in emails/links |
 | PUBLIC_BASE_URL | ❌ | - | Used in certificate QR codes |

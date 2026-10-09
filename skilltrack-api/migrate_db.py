@@ -5,6 +5,7 @@ Works with SQLite and PostgreSQL.
 Run this before starting the application to update the database schema.
 """
 import os
+import re
 import sys
 from sqlalchemy import create_engine, text, inspect
 from app.config import DATABASE_URL
@@ -34,12 +35,28 @@ def index_exists(conn, index_name: str) -> bool:
         ), {"name": index_name})
     return result.first() is not None
 
+def _readiness_category(value: str | None) -> tuple[str, str | None]:
+    """Convert legacy free-form readiness values while retaining narrative details."""
+    original = (value or "").strip()
+    normalized = re.sub(r"[\s-]+", "_", original.upper())
+    if normalized in {"READY", "DEVELOPING", "NOT_READY"}:
+        return normalized, None
+
+    if re.search(r"\bnot[\s_-]+(?:(?:currently|yet)[\s_-]+)?ready\b", original, re.IGNORECASE):
+        category = "NOT_READY"
+    elif re.search(r"\b(?:developing|in[\s_-]+progress|working\s+toward)\b", original, re.IGNORECASE):
+        category = "DEVELOPING"
+    elif re.search(r"\bready\b", original, re.IGNORECASE):
+        category = "READY"
+    else:
+        category = "DEVELOPING"
+    return category, original or None
+
 def run_migration():
     """Run all database migrations."""
-    print(f"🔄 Starting migration for: {DATABASE_URL.split('@')[0]}...")
-
     engine = create_engine(DATABASE_URL)
     is_sqlite = 'sqlite' in DATABASE_URL
+    print(f"🔄 Starting migration for {engine.dialect.name} database...")
 
     with engine.begin() as conn:
         inspector = inspect(engine)
@@ -373,6 +390,41 @@ def run_migration():
                 else:
                     conn.execute(text("ALTER TABLE exam_keys ALTER COLUMN level_id DROP NOT NULL"))
                     print("  ✓ Made exam_keys.level_id optional")
+
+        # ============================================================
+        # 9. Skill-gap reports: narrative summary and categorical readiness
+        # ============================================================
+        if table_exists(inspector, 'skill_gap_analysis'):
+            print("📋 Migrating skill_gap_analysis report fields...")
+            if not is_sqlite:
+                conn.execute(text(
+                    "ALTER TABLE skill_gap_analysis "
+                    "ALTER COLUMN overall_summary TYPE TEXT USING overall_summary::TEXT"
+                ))
+
+            rows = conn.execute(text(
+                "SELECT id, overall_summary, readiness FROM skill_gap_analysis"
+            )).mappings().all()
+            for row in rows:
+                category, details = _readiness_category(row["readiness"])
+                summary = row["overall_summary"] or ""
+                if details and details.casefold() not in summary.casefold():
+                    summary = f"{summary.rstrip()}\n\nReadiness details: {details}".strip()
+                if category != row["readiness"] or summary != row["overall_summary"]:
+                    conn.execute(
+                        text(
+                            "UPDATE skill_gap_analysis "
+                            "SET overall_summary = :summary, readiness = :readiness WHERE id = :id"
+                        ),
+                        {"summary": summary, "readiness": category, "id": row["id"]},
+                    )
+
+            if not is_sqlite:
+                conn.execute(text(
+                    "ALTER TABLE skill_gap_analysis "
+                    "ALTER COLUMN readiness TYPE VARCHAR(20) USING readiness::VARCHAR(20)"
+                ))
+            print("  ✓ Normalized readiness values and updated report field types")
 
     print("✅ Migration completed successfully!")
     return True
